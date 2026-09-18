@@ -60,12 +60,22 @@ const ConnectionResponse = Schema.Struct({
 // createClient — register an owner-scoped OAuth app.
 // ---------------------------------------------------------------------------
 
+/** The grant set, spelled ONCE. It was previously repeated per struct, which is
+ *  how `github_app` reached `createClient` but not the summary response — a
+ *  client you could create and then never list. Keep new grants here only. */
+const OAuthGrantSchema = Schema.Literals([
+  "authorization_code",
+  "client_credentials",
+  "id_jag",
+  "github_app",
+]);
+
 const CreateClientPayload = Schema.Struct({
   owner: Owner,
   slug: OAuthClientSlug,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
-  grant: Schema.Literals(["authorization_code", "client_credentials", "id_jag"]),
+  grant: OAuthGrantSchema,
   clientId: Schema.String,
   clientSecret: Schema.String,
   tokenEndpointAuthMethod: Schema.optional(TokenEndpointAuthMethodSchema),
@@ -114,7 +124,7 @@ const RegisterDynamicResponse = Schema.Struct({
 const OAuthClientSummaryResponse = Schema.Struct({
   owner: Owner,
   slug: OAuthClientSlug,
-  grant: Schema.Literals(["authorization_code", "client_credentials", "id_jag"]),
+  grant: OAuthGrantSchema,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),

@@ -215,6 +215,7 @@ import {
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
+import { mintGithubAppToken } from "./github-app";
 import {
   ENTERPRISE_MANAGED_PROVIDER_STATE_KEY,
   enterpriseManagedStateFrom,
@@ -2726,6 +2727,41 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             scopes: grantedScopes,
             reauth,
           });
+          yield* persistRefreshedToken(row, provider, token);
+          return token.access_token;
+        }
+
+        // github_app: like client_credentials there is no refresh token — the
+        // installation token (1h, fixed by GitHub) is re-minted from the app's
+        // private key, with no human to re-auth.
+        //
+        // Only the PROACTIVE trigger reaches here. `forceRefreshConnectionValues`
+        // early-returns when `refresh_item_id` is null, and a mint returns no
+        // refresh token, so the reactive 401 retry never re-mints this grant —
+        // exactly the shape `client_credentials` already has. A token revoked
+        // before its hour is up therefore keeps failing until `expires_at`
+        // lapses. Fixing that belongs in the reactive path for both grants, not
+        // in a special case here.
+        if (clientRow.grant === "github_app") {
+          const token = yield* mintGithubAppToken({
+            appId: clientRow.clientId,
+            privateKeyPem: clientSecret ?? "",
+            // `clientRow.tokenUrl`, NOT the rebound `tokenUrl` above: for this
+            // grant the URL names the INSTALLATION, so honouring a per-connection
+            // regional rebind would silently mint a valid token for a different
+            // installation rather than fail.
+            tokenUrl: clientRow.tokenUrl,
+            fetch: config.fetch,
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new StorageError({
+                  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message`
+                  message: `GitHub App token request failed: ${cause.message}`,
+                  cause,
+                }),
+            ),
+          );
           yield* persistRefreshedToken(row, provider, token);
           return token.access_token;
         }

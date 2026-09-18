@@ -94,7 +94,10 @@ export type EnterpriseIdentityProviderDescriptor =
  *  Such a client's `clientId`/`clientSecret`/`tokenUrl` are its registration at
  *  the MCP server's Resource Authorization Server — the IdP registration is a
  *  second client, named on the connect request. */
-export type OAuthGrant = "authorization_code" | "client_credentials" | "id_jag";
+/** `github_app` mints a GitHub App installation token by signing a JWT with the
+ *  app's private key (see ./github-app). Like `client_credentials` it has no
+ *  human step and no refresh token — the token is re-minted on expiry. */
+export type OAuthGrant = "authorization_code" | "client_credentials" | "id_jag" | "github_app";
 
 /** Provider OAuth config an integration declares as one of its auth templates —
  *  what to request. (The flow itself runs off the self-contained OAuthClient.)
