@@ -109,6 +109,7 @@ import {
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
+import { mintGithubAppToken } from "./github-app";
 import { OAUTH2_SESSION_TTL_MS, encodeOAuthCallbackState } from "./oauth";
 import { canonicalIssuerUrl, hostOfUrl, isDcrClassifiedRow, parseUrl } from "./oauth-gc";
 
@@ -461,7 +462,10 @@ const clientOwnerFromPayload = (payload: unknown): Owner | null => {
  *  `authorization_code`; an unknown grant means a corrupt row and callers that
  *  drive token exchange (`loadClient`) must fail loudly rather than guessing. */
 const parseGrant = (grant: unknown): OAuthGrant | null =>
-  grant === "client_credentials" || grant === "authorization_code" || grant === "id_jag"
+  grant === "client_credentials" ||
+  grant === "authorization_code" ||
+  grant === "id_jag" ||
+  grant === "github_app"
     ? grant
     : null;
 
@@ -1810,6 +1814,42 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             message: `The built-in OAuth app is not enabled for integration ${input.integration}.`,
           });
         }
+      }
+
+      // github_app: no browser and no exchange — sign a JWT with the app's
+      // private key (held as this client's secret) and mint straight from the
+      // installation endpoint in `tokenUrl`.
+      if (client.grant === "github_app") {
+        const token = yield* mintGithubAppToken({
+          appId: client.clientId,
+          privateKeyPem: client.clientSecret ?? "",
+          tokenUrl: client.tokenUrl,
+          fetch,
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: OAuth2Error carries a typed `message` field
+              new OAuthStartError({ message: cause.message }),
+          ),
+        );
+        const connection = yield* mintFromToken(
+          { ...input, name },
+          client,
+          token,
+          requestedScopes,
+          input.clientOwner,
+          null,
+        ).pipe(
+          Effect.mapError((cause) =>
+            Predicate.isTagged(cause, "OrgWriteDeniedError")
+              ? cause
+              : new OAuthStartError({
+                  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: StorageFailure carries a typed `message` field
+                  message: `Failed to mint OAuth connection: ${cause.message}`,
+                }),
+          ),
+        );
+        return { status: "connected", connection } as const;
       }
 
       // client_credentials: exchange immediately and mint the connection.
