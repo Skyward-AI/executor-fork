@@ -1,5 +1,6 @@
 import type { D1Database, DurableObjectNamespace, R2Bucket } from "@cloudflare/workers-types";
 
+import type { JevGatewayConfig } from "@executor-js/execution";
 import { isValidOrgSlug } from "@executor-js/api";
 import { missingPublicOriginWarning, resolvePublicOrigin } from "@executor-js/sdk/public-origin";
 
@@ -12,6 +13,11 @@ let warnedNoCloudflareOrigin = false;
 // generation. Identity comes entirely from Cloudflare Access in front of the
 // Worker; the only real secret is the at-rest secret-encryption key.
 // ---------------------------------------------------------------------------
+
+/** A Secrets Store binding: the value is resolved per call, never held as a var. */
+export interface SecretsStoreBinding {
+  readonly get: () => Promise<string>;
+}
 
 export const CLOUDFLARE_NAMESPACE = "executor_cloudflare";
 export const CLOUDFLARE_SCHEMA_VERSION = "1.0.0";
@@ -55,6 +61,22 @@ export interface CloudflareEnv {
   /** At-rest secret-encryption key (a `wrangler secret`, NOT a var). */
   readonly EXECUTOR_SECRET_KEY?: string;
   readonly ALLOW_LOCAL_NETWORK?: string;
+  /**
+   * Cloudflare AI Gateway, for the Jev classifier (`custom-typesafe`). Every
+   * model call goes through a gateway rather than a provider directly, so the
+   * key stays in the gateway's BYOK store and never in a worker var — which is
+   * why there is no TYPESAFE_API_KEY here and must not be one.
+   */
+  readonly CLOUDFLARE_ACCOUNT_ID?: string;
+  readonly AI_GATEWAY_ID?: string;
+  /**
+   * `cf-aig-authorization` bearer, bound from the Secrets Store — NOT a
+   * `wrangler secret` and never a var. A store binding hands back an object
+   * whose value is fetched on demand, so the token is never part of the
+   * worker's static configuration and is rotated in one place for every worker
+   * that binds it.
+   */
+  readonly AI_GATEWAY_TOKEN?: SecretsStoreBinding;
   readonly VITE_PUBLIC_SITE_URL?: string;
   /**
    * Dev/single-user escape hatch: when "true", skip Cloudflare Access entirely
@@ -84,6 +106,10 @@ export interface CloudflareConfig {
    *  static URL — the per-request origin is used instead (see RequestWebOrigin). */
   readonly webBaseUrl?: string;
   readonly enableDevAuth: boolean;
+  /** Present only when the gateway is fully configured; absent disables Jev
+   *  rather than failing a search, so a missing var degrades ranking instead of
+   *  breaking tool discovery. */
+  readonly jevGateway?: JevGatewayConfig;
 }
 
 type CloudflareConfigEnv = Omit<
@@ -95,6 +121,24 @@ type CloudflareAccessEnv = Pick<
   CloudflareConfigEnv,
   "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "ENABLE_DEV_AUTH"
 >;
+
+// Both ids are required: a gateway URL missing either one resolves to a 404 that
+// would look like "Jev found nothing" rather than "Jev was never configured".
+const resolveJevGateway = (
+  env: CloudflareConfigEnv,
+): CloudflareConfig["jevGateway"] => {
+  const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim() ?? "";
+  const gatewayId = env.AI_GATEWAY_ID?.trim() ?? "";
+  if (accountId.length === 0 || gatewayId.length === 0) {
+    return undefined;
+  }
+  const token = env.AI_GATEWAY_TOKEN;
+  return {
+    accountId,
+    gatewayId,
+    authToken: token === undefined ? undefined : () => token.get(),
+  };
+};
 
 const splitLower = (value: string | undefined): readonly string[] =>
   (value ?? "")
@@ -185,5 +229,6 @@ export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
     // mirroring self-host (gated on enableDevAuth = local `wrangler dev`).
     webBaseUrl,
     enableDevAuth,
+    jevGateway: resolveJevGateway(env),
   };
 };
