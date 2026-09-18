@@ -29,7 +29,7 @@
     {
       "binding": "DB",
       "database_name": "executor",
-      "database_id": "ae748ca1-032c-4427-a1a0-fe39db77d1a9",
+      "database_id": "833a3544-5c28-45bf-b964-a0846a783b73",
     },
   ],
   // Plugin blob seam backend: multi-MB values (resolved OpenAPI specs,
