@@ -33,7 +33,12 @@ const schemaToStandard = <A, I>(schema: Schema.Decoder<A, I>): StaticToolSchema<
   >;
 
 const OwnerSchema = Schema.Literals(["org", "user"]);
-const OAuthGrantSchema = Schema.Literals(["authorization_code", "client_credentials"]);
+const OAuthGrantSchema = Schema.Literals([
+  "authorization_code",
+  "client_credentials",
+  "id_jag",
+  "github_app",
+]);
 
 // ---------------------------------------------------------------------------
 // Schemas
