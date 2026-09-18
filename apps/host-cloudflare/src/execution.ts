@@ -56,6 +56,8 @@ export const makeCloudflareHostConfig = (config: CloudflareConfig): Layer.Layer<
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
+    // Absent unless both gateway ids are set, which leaves search lexical.
+    ...(config.jevGateway === undefined ? {} : { jevGateway: config.jevGateway }),
   });
 
 /**

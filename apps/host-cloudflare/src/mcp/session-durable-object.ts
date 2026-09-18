@@ -24,6 +24,7 @@ import {
   type McpExecutionOwnerRoute,
 } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+import { makeJevToolDiscoveryProvider } from "@executor-js/execution";
 import type { ResumeResponse } from "@executor-js/execution";
 
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "../config";
@@ -176,6 +177,15 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         // connection (`?search_tools=true`). Same restore rule as artifacts.
         searchToolsEnabled: sessionMeta.searchToolsEnabled ?? false,
         mode: sessionMeta.toolMode ?? "codemode",
+        // Same ranker both surfaces: without this, passthrough `search` falls
+        // back to lexical while codemode's `tools.search` ranks semantically.
+        ...(config.jevGateway === undefined
+          ? {}
+          : {
+              toolDiscoveryProvider: makeJevToolDiscoveryProvider({
+                gateway: config.jevGateway,
+              }),
+            }),
         // Cold restores rebuild this server with no `initialize` to replay, so
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,

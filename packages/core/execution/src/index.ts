@@ -38,3 +38,9 @@ export {
   type PagedResult,
   type ToolDiscoveryResult,
 } from "./tool-invoker";
+
+export {
+  makeJevToolDiscoveryProvider,
+  type JevToolDiscoveryOptions,
+} from "./jev-discovery";
+export type { JevGatewayConfig } from "./jev";

@@ -72,3 +72,44 @@ describe("Cloudflare deployment configuration", () => {
     expect(config.vars).toHaveProperty("ENABLE_DEV_AUTH", "false");
   });
 });
+
+describe("jevGateway", () => {
+  const access = {
+    ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+    ACCESS_AUD: "aud-tag",
+  };
+
+  it("is configured when both ids are present", async () => {
+    const config = loadConfig(
+      makeEnv({
+        ...access,
+        CLOUDFLARE_ACCOUNT_ID: "acct",
+        AI_GATEWAY_ID: "staging-gateway",
+        AI_GATEWAY_TOKEN: { get: () => Promise.resolve("tok") },
+      }),
+    );
+    expect(config.jevGateway?.accountId).toBe("acct");
+    expect(config.jevGateway?.gatewayId).toBe("staging-gateway");
+    // The binding is resolved per call, so config carries a resolver and never
+    // the secret itself.
+    await expect(config.jevGateway?.authToken?.()).resolves.toBe("tok");
+  });
+
+  it("is OFF when an id is missing, so search degrades to lexical instead of 404ing", () => {
+    // A gateway URL built from a blank id resolves to a 404 that reads like
+    // "Jev found nothing" rather than "Jev was never configured".
+    expect(
+      loadConfig(makeEnv({ ...access, AI_GATEWAY_ID: "staging-gateway" })).jevGateway,
+    ).toBeUndefined();
+    expect(
+      loadConfig(makeEnv({ ...access, CLOUDFLARE_ACCOUNT_ID: "acct" })).jevGateway,
+    ).toBeUndefined();
+  });
+
+  it("keeps the token optional — an unauthenticated gateway needs none", () => {
+    const config = loadConfig(
+      makeEnv({ ...access, CLOUDFLARE_ACCOUNT_ID: "acct", AI_GATEWAY_ID: "g" }),
+    );
+    expect(config.jevGateway?.authToken).toBeUndefined();
+  });
+});

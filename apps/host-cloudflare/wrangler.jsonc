@@ -61,6 +61,16 @@
       { "name": "MCP_EXECUTION_OWNER", "class_name": "McpExecutionOwnerDirectoryDO" },
     ],
   },
+  // Secrets Store, not `wrangler secret`: the value is fetched per call rather
+  // than baked into the worker's configuration, and one rotation in the store
+  // covers every worker that binds it.
+  "secrets_store_secrets": [
+    {
+      "binding": "AI_GATEWAY_TOKEN",
+      "store_id": "18b901f1d8ca4cf4869408ac39159daa",
+      "secret_name": "AI_GATEWAY_TOKEN_STAGING",
+    },
+  ],
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["McpSessionDO"] },
     { "tag": "v2", "new_sqlite_classes": ["McpExecutionOwnerDirectoryDO"] },
@@ -71,6 +81,14 @@
   // secret-encryption key) is a SECRET, set it with
   // `wrangler secret put EXECUTOR_SECRET_KEY`, never in vars.
   "vars": {
+    // Jev (the tool-search classifier) is reached through this AI Gateway as the
+    // account-level custom provider `custom-typesafe`. The provider key lives in
+    // the gateway's BYOK store, never here; AI_GATEWAY_TOKEN is the gateway's own
+    // bearer and is bound from the Secrets Store below, never a var or a
+    // `wrangler secret`.
+    // With either id missing, Jev is simply off and search falls back to lexical.
+    "CLOUDFLARE_ACCOUNT_ID": "b75ee9798c9c48a874af240b29724270",
+    "AI_GATEWAY_ID": "staging-gateway",
     "ACCESS_NAME_CLAIM": "name",
     "ACCESS_GROUPS_CLAIM": "groups",
     // Never preserve a production dev-auth override through keep_vars.

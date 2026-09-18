@@ -30,6 +30,7 @@ import type { McpResource } from "@executor-js/host-mcp";
 import type { AnyPlugin, Executor, ExecutorConfig, StorageFailure } from "@executor-js/sdk";
 import {
   createExecutionEngine,
+  makeJevToolDiscoveryProvider,
   type ExecutionEngine,
   type ExecutionEngineConfig,
 } from "@executor-js/execution";
@@ -139,9 +140,25 @@ export const makeExecutionStack = <
     const { decorate } = yield* EngineDecorator.asEffect().pipe(
       Effect.withSpan("executor.stack.decorator"),
     );
+    // Tool search stays lexical unless this host configured a gateway, which is
+    // the right default for a host without one. Where a gateway IS configured Jev
+    // does the ranking, because the lexical ranker only matches English and the
+    // queries this fork serves are Spanish as often as not.
+    const hostConfig = yield* HostConfig.asEffect();
+    const jevGateway = hostConfig.jevGateway;
     const engine = yield* Effect.sync(() =>
       decorate(
-        createExecutionEngine({ executor, codeExecutor }),
+        createExecutionEngine({
+          executor,
+          codeExecutor,
+          ...(jevGateway === undefined
+            ? {}
+            : {
+                toolDiscoveryProvider: makeJevToolDiscoveryProvider({
+                  gateway: jevGateway,
+                }),
+              }),
+        }),
         {
           accountId,
           organizationId,

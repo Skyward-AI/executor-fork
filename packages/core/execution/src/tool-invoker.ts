@@ -429,7 +429,10 @@ export type ExecutorIntegrationListItem = {
 };
 
 export type ToolDiscoveryInput = {
-  readonly executor: Executor;
+  /** Only the tool catalog, matching what `searchTools` itself declares: a
+   *  passthrough caller builds a filtered `tools.list` and has no whole
+   *  `Executor` to hand over. */
+  readonly executor: { readonly tools: Pick<Executor["tools"], "list"> };
   readonly query: string;
   readonly namespace?: string;
   readonly limit: number;
@@ -462,7 +465,9 @@ export type PagedResult<T> = {
   readonly nextOffset: number | null;
 };
 
-const paginate = <T>(all: readonly T[], offset: number, limit: number): PagedResult<T> => {
+/** Slice a ranked list into a page. Exported so another discovery provider pages
+ *  identically — `hasMore`/`nextOffset` are easy to get subtly wrong twice. */
+export const paginate = <T>(all: readonly T[], offset: number, limit: number): PagedResult<T> => {
   const total = all.length;
   const start = Math.min(Math.max(offset, 0), total);
   const items = all.slice(start, start + limit);
@@ -478,14 +483,14 @@ const paginate = <T>(all: readonly T[], offset: number, limit: number): PagedRes
 
 /** What `searchTools` ranks over — the sandbox-callable path plus the v2
  *  identity fields a query can match against. */
-type SearchableTool = {
+export type SearchableTool = {
   readonly path: string;
   readonly integration: string;
   readonly name: string;
   readonly description?: string;
 };
 
-const toSearchableTool = (tool: Tool): SearchableTool => ({
+export const toSearchableTool = (tool: Tool): SearchableTool => ({
   path: addressToPath(String(tool.address)),
   integration: String(tool.integration),
   name: String(tool.name),
@@ -582,7 +587,7 @@ const scorePreparedField = (
   };
 };
 
-const matchesNamespace = (tool: SearchableTool, namespace?: string): boolean => {
+export const matchesNamespace = (tool: SearchableTool, namespace?: string): boolean => {
   if (!namespace || normalizeSearchText(namespace).length === 0) {
     return true;
   }
