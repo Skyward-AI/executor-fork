@@ -52,7 +52,7 @@ import type {
 import type * as Tracer from "effect/Tracer";
 import {
   createExecutionEngine,
-  searchTools,
+  defaultToolDiscoveryProvider,
   formatExecuteResult,
   formatPausedExecution,
   formatTtlDuration,
@@ -65,6 +65,7 @@ import {
   type Skill,
   type ExecutionEngine,
   type ExecutionEngineConfig,
+  type ToolDiscoveryProvider,
   type ResumeResponse,
   type ExecutionResult,
   type PausedExecution,
@@ -211,6 +212,12 @@ type SharedMcpServerConfig = {
    * Invoke is marked destructive for client approval. Requires `tools`.
    */
   readonly mode?: McpToolMode;
+  /**
+   * Ranks `search`. Passed explicitly because a caller that supplies a prebuilt
+   * `engine` gives this server no way to reach the engine's own provider, and
+   * passthrough search must rank the same way codemode's `tools.search` does.
+   */
+  readonly toolDiscoveryProvider?: ToolDiscoveryProvider;
   /**
    * The scoped executor's tool catalog, for passthrough mode. Structurally
    * satisfied by `executor.tools`. Hosts that never serve passthrough may
@@ -1278,6 +1285,10 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
     args: unknown,
     extra: McpRequestJoinKeys,
   ) => Effect.Effect<McpToolResult, E>,
+  /** Ranks `search`. Passed in because this function receives ports, not the
+   *  server config — and passthrough search must rank the same way codemode's
+   *  `tools.search` does. */
+  toolDiscoveryProvider: ToolDiscoveryProvider,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const context = yield* Effect.context<never>();
@@ -1419,7 +1430,15 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                       .pipe(Effect.map((items) => items.filter((tool) => tool.static !== true))),
                 },
               };
-              const page = yield* searchTools(discovery, query, limit, { offset });
+              // Through the configured provider, not the raw ranker: passthrough
+              // search must rank the same way codemode's `tools.search` does, or
+              // semantic ranking silently applies to one surface and not the other.
+              const page = yield* toolDiscoveryProvider.searchTools({
+                executor: discovery,
+                query,
+                limit,
+                offset,
+              });
               const candidates = yield* Effect.forEach(
                 page.items,
                 (match) =>
@@ -2049,6 +2068,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         config.connections,
         config.integrations,
         executePassthroughCall,
+        config.toolDiscoveryProvider ?? defaultToolDiscoveryProvider,
       );
     }
 
