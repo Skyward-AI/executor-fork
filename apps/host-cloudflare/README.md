@@ -64,6 +64,26 @@ The Access values are live Worker variables, not values in `wrangler.jsonc`.
 Wrangler's `keep_vars` option preserves them during later code deploys. Run the
 command above again whenever you need to change them.
 
+### Redeploy after a merge
+
+There is no automatic deploy. To ship a merged change:
+
+```bash
+git checkout skyward && git pull --ff-only
+bun install
+cd apps/host-cloudflare
+bun run deploy   # vite build -> assert-shell-asset -> wrangler deploy
+```
+
+Requires `bunx wrangler login` to the Skyward account. `keep_vars` preserves
+the Access variables set above, so there is nothing else to pass. Do not
+re-run `deploy:setup` for a routine deploy; that script is for first-time
+provisioning.
+
+Verify with `bunx wrangler deployments list` (run from `apps/host-cloudflare`),
+which lists the new version. Logs and traces are in Cloudflare Workers
+Observability for `executor-cloudflare`.
+
 ## Local development
 
 ```bash
