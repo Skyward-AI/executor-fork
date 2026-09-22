@@ -610,6 +610,59 @@ export const userFacingProbeMessage = (
     ? "Couldn't reach this URL. Check the address, your network, and that the server is running."
     : "This URL doesn't appear to host an MCP server. Double-check the address, including the path.";
 
+/** Structural fields of the errors the plugin folds into fallbacks. Typed, so
+ *  renaming a field on McpConnectionError or McpToolDiscoveryError breaks the
+ *  build instead of silently dropping it from the logs. */
+interface SwallowedMcpError {
+  readonly name?: string;
+  readonly message: string;
+  readonly httpStatus?: number;
+  readonly failureKind?: string;
+  readonly stage?: string;
+  readonly transport?: string;
+}
+
+const logMcpWarning = (message: string, annotations: Record<string, string | number | boolean>) =>
+  Effect.logWarning(message).pipe(
+    Effect.annotateLogs(annotations),
+    Effect.andThen(Effect.annotateCurrentSpan(annotations)),
+  );
+
+/** Log a failure the plugin is about to fold into a fallback (probe, detect,
+ *  discovery), so the reason survives in the host's logs. Only structural
+ *  fields are logged and the endpoint is sanitized: a cause or request can
+ *  carry the credential headers the caller supplied. */
+const logSwallowedMcpError = (message: string, failure: SwallowedMcpError, endpoint?: string) =>
+  logMcpWarning(message, {
+    ...(endpoint === undefined ? {} : endpointTelemetryAttributes("mcp.endpoint", endpoint)),
+    "mcp.error.name": failure.name ?? "unknown",
+    "mcp.error.message": failure.message,
+    ...(failure.httpStatus === undefined ? {} : { "mcp.error.http_status": failure.httpStatus }),
+    ...(failure.failureKind === undefined ? {} : { "mcp.error.failure_kind": failure.failureKind }),
+    ...(failure.stage === undefined ? {} : { "mcp.error.stage": failure.stage }),
+    ...(failure.transport === undefined ? {} : { "mcp.error.transport": failure.transport }),
+  });
+
+/** Marking the catalog stale is best-effort: the next tools read re-lists
+ *  either way, so a failure here is logged, not surfaced. */
+const markToolsStaleOrLog = (
+  connections: PluginCtx["connections"],
+  ref: Parameters<PluginCtx["connections"]["markToolsStale"]>[0],
+) =>
+  connections
+    .markToolsStale(ref)
+    .pipe(Effect.catch((error) => logSwallowedMcpError("mcp: failed to mark tools stale", error)));
+
+const logRejectedProbeShape = (endpoint: string, shape: McpShapeProbeResult) =>
+  shape.kind === "mcp"
+    ? Effect.void
+    : logMcpWarning("mcp: probe rejected endpoint", {
+        ...endpointTelemetryAttributes("mcp.endpoint", endpoint),
+        "mcp.probe.kind": shape.kind,
+        "mcp.probe.reason": shape.reason,
+        ...(shape.kind === "not-mcp" ? { "mcp.probe.category": shape.category } : {}),
+      });
+
 // ---------------------------------------------------------------------------
 // MCP-SDK OAuth provider adapter — wraps a pre-resolved access token so the
 // transport sends it as a Bearer header. Refresh is core's responsibility
@@ -1011,8 +1064,10 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             httpClientLayer,
           }).pipe(
             Effect.map((d) => ({ ok: true as const, ...d })),
-            Effect.catch(() =>
-              Effect.succeed({ ok: false as const, manifest: null, versionNegotiation: null }),
+            Effect.catch((error) =>
+              logSwallowedMcpError("mcp: probe discovery failed", error, trimmed).pipe(
+                Effect.as({ ok: false as const, manifest: null, versionNegotiation: null }),
+              ),
             ),
             Effect.withSpan("mcp.plugin.discover_tools"),
           );
@@ -1042,6 +1097,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             headers: probeHeaders,
             queryParams: probeQueryParams,
           });
+          yield* logRejectedProbeShape(trimmed, shape);
 
           // A `not-mcp`/auth-required shape only proves the endpoint returned
           // 401, but the add-flow recovery is the same as a spec-compliant MCP
@@ -1078,7 +1134,13 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
 
           const probeResult = yield* ctx.oauth.probe({ url: trimmed }).pipe(
             Effect.map((oauth) => ({ ok: true as const, oauth })),
-            Effect.catch(() => Effect.succeed({ ok: false as const, oauth: null })),
+            Effect.catch((error) =>
+              logSwallowedMcpError(
+                "mcp: probe found no usable OAuth metadata",
+                error,
+                trimmed,
+              ).pipe(Effect.as({ ok: false as const, oauth: null })),
+            ),
             Effect.withSpan("mcp.plugin.probe_oauth"),
           );
 
@@ -1515,6 +1577,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             // Distinguish the two ways this can fail by TAG, not by reading a
             // message off an unknown: the plugin refused, or we never reached
             // it at all.
+            Effect.tapError((error) =>
+              logSwallowedMcpError("mcp: codex plugin access check failed", error),
+            ),
             Effect.catchTags({
               McpConnectionError: () =>
                 Effect.succeed({
@@ -1568,11 +1633,18 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
       Effect.gen(function* () {
         const parsed = parseMcpIntegrationConfig(config);
         if (!parsed) return { tools: [] as readonly ToolDef[], incomplete: true };
+        const remoteEndpoint = parsed.transport === "remote" ? parsed.endpoint : undefined;
 
         // Discovery tolerates unresolved credentials (an open server lists
         // tools unauthenticated; a bad value just yields zero tools).
         const values = yield* getValues().pipe(
-          Effect.orElseSucceed(() => ({}) as Record<string, string | null>),
+          Effect.catch((error) =>
+            logSwallowedMcpError(
+              "mcp: discovery continues without unresolved credential values",
+              error,
+              remoteEndpoint,
+            ).pipe(Effect.as({} as Record<string, string | null>)),
+          ),
         );
 
         const built = yield* buildConnectorInput(
@@ -1584,6 +1656,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         ).pipe(Effect.result);
 
         if (Result.isFailure(built)) {
+          yield* logSwallowedMcpError(
+            "mcp: connector could not be built; tools left incomplete",
+            built.failure,
+            remoteEndpoint,
+          );
           return {
             tools: [] as readonly ToolDef[],
             incomplete: true,
@@ -1598,6 +1675,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           }),
         );
         if (Result.isFailure(discovered)) {
+          yield* logSwallowedMcpError(
+            "mcp: tool discovery failed; tools left incomplete",
+            discovered.failure,
+            remoteEndpoint,
+          );
           const reauthorizationRequired = discovered.failure.reauthorizationRequired === true;
           return {
             tools: [] as readonly ToolDef[],
@@ -1716,9 +1798,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           },
         }).pipe(
           Effect.onExit(() =>
-            toolListChanged
-              ? ctx.connections.markToolsStale(connectionRef).pipe(Effect.ignore)
-              : Effect.void,
+            toolListChanged ? markToolsStaleOrLog(ctx.connections, connectionRef) : Effect.void,
           ),
         );
 
@@ -1730,9 +1810,9 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           // spec's protocol error. Same meaning: the persisted catalog
           // drifted. Mark it stale and answer with the typed drift failure.
           if (isUnknownToolMessage(errorMessage, stamp.toolName)) {
-            return yield* ctx.connections
-              .markToolsStale(connectionRef)
-              .pipe(Effect.ignore, Effect.as(unknownToolFailure(String(toolRow.name), credential)));
+            return yield* markToolsStaleOrLog(ctx.connections, connectionRef).pipe(
+              Effect.as(unknownToolFailure(String(toolRow.name), credential)),
+            );
           }
           if (parsed.transport === "remote") {
             const recoveredSlackConnectFile = yield* recoverSlackConnectFile({
@@ -1797,13 +1877,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             );
           }
           if (error.unknownTool === true) {
-            return ctx.connections
-              .markToolsStale({
-                owner: credential.owner,
-                integration: credential.integration,
-                name: credential.connection,
-              })
-              .pipe(Effect.ignore, Effect.as(unknownToolFailure(String(toolRow.name), credential)));
+            return markToolsStaleOrLog(ctx.connections, {
+              owner: credential.owner,
+              integration: credential.integration,
+              name: credential.connection,
+            }).pipe(Effect.as(unknownToolFailure(String(toolRow.name), credential)));
           }
           // The server refused the call itself (typically -32602 invalid
           // params: an argument outside the schema's enum, a missing required
@@ -1865,7 +1943,11 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           httpClientLayer,
         }).pipe(
           Effect.map(() => true),
-          Effect.catch(() => Effect.succeed(false)),
+          Effect.catch((error) =>
+            logSwallowedMcpError("mcp: detect discovery failed", error, trimmed).pipe(
+              Effect.as(false),
+            ),
+          ),
           Effect.withSpan("mcp.plugin.discover_tools"),
         );
 
@@ -1880,6 +1962,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         }
 
         const shape = yield* probeMcpEndpointShape(trimmed, { httpClientLayer });
+        yield* logRejectedProbeShape(trimmed, shape);
         if (shape.kind === "mcp") {
           return {
             kind: MCP_PLUGIN_ID,
