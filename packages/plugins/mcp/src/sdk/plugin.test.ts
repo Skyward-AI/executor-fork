@@ -1,5 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Layer, Option, Predicate, Schema, Tracer } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  Layer,
+  Logger,
+  Option,
+  Predicate,
+  References,
+  Schema,
+  Tracer,
+} from "effect";
 import { fileURLToPath } from "node:url";
 import {
   HttpClient,
@@ -1384,6 +1395,52 @@ describe("mcpPlugin", () => {
           supportsDynamicRegistration: false,
           toolCount: null,
         });
+
+        yield* executor.close();
+        yield* Effect.promise(() => config.testDb.close());
+      }),
+    ),
+  );
+
+  it.effect("probeEndpoint logs why it rejected an endpoint, without the credential", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const SECRET = "synthetic-probe-secret";
+        const server = yield* serveTestHttpApp(() =>
+          Effect.succeed(HttpServerResponse.html("<html>not an MCP server</html>")),
+        );
+        const config = makeTestConfig({ plugins: [mcpPlugin()] as const });
+        const executor = yield* createExecutor(config);
+
+        const warnings: Array<{
+          readonly message: string;
+          readonly annotations: Record<string, unknown>;
+        }> = [];
+        const capture = Logger.make<unknown, void>((options) => {
+          if (options.logLevel !== "Warn") return;
+          warnings.push({
+            message: String(options.message),
+            annotations: { ...options.fiber.getRef(References.CurrentLogAnnotations) },
+          });
+        });
+
+        const exit = yield* executor.mcp
+          .probeEndpoint({ endpoint: server.url("/mcp"), headers: { "X-Api-Key": SECRET } })
+          .pipe(Effect.exit, Effect.provide(Logger.layer([capture])));
+
+        expect(Exit.isFailure(exit)).toBe(true);
+        expect(
+          warnings.find((w) => w.message.includes("discovery failed"))?.annotations,
+        ).toMatchObject({
+          "mcp.error.name": "McpToolDiscoveryError",
+          "mcp.endpoint": server.url("/mcp"),
+        });
+        expect(warnings.find((w) => w.message.includes("rejected"))?.annotations).toMatchObject({
+          "mcp.probe.kind": "not-mcp",
+          "mcp.probe.category": "wrong-shape",
+          "mcp.probe.reason": "2xx POST body is not a JSON-RPC envelope",
+        });
+        expect(JSON.stringify(warnings)).not.toContain(SECRET);
 
         yield* executor.close();
         yield* Effect.promise(() => config.testDb.close());
