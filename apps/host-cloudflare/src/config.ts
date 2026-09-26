@@ -78,6 +78,8 @@ export interface CloudflareEnv {
    */
   readonly AI_GATEWAY_TOKEN?: SecretsStoreBinding;
   readonly VITE_PUBLIC_SITE_URL?: string;
+  /** Sentry DSN (a `wrangler secret`). Unset leaves Sentry disabled. */
+  readonly SENTRY_DSN?: string;
   /**
    * Dev/single-user escape hatch: when "true", skip Cloudflare Access entirely
    * and treat every request as a fixed admin. For local `wrangler dev` and
@@ -124,9 +126,7 @@ type CloudflareAccessEnv = Pick<
 
 // Both ids are required: a gateway URL missing either one resolves to a 404 that
 // would look like "Jev found nothing" rather than "Jev was never configured".
-const resolveJevGateway = (
-  env: CloudflareConfigEnv,
-): CloudflareConfig["jevGateway"] => {
+const resolveJevGateway = (env: CloudflareConfigEnv): CloudflareConfig["jevGateway"] => {
   const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim() ?? "";
   const gatewayId = env.AI_GATEWAY_ID?.trim() ?? "";
   if (accountId.length === 0 || gatewayId.length === 0) {
