@@ -208,6 +208,31 @@ describe("POST bridge: lost-execution visibility", () => {
     }
   });
 
+  it("reports each lost call to the host's lost-call hook, and nothing on the happy path", async () => {
+    const reported: unknown[] = [];
+    const holder = globalThis as { __executorReportLostCall?: (detail: unknown) => void };
+    holder.__executorReportLostCall = (detail) => reported.push(detail);
+    try {
+      const delivered = await postToBridge(toolCall(1));
+      const deliveredBody = drainResponse(delivered.response);
+      emitResponse(delivered.ws, { id: 1, jsonrpc: "2.0", result: { ok: true } });
+      await flushMicrotasks();
+      emitAbnormalClose(delivered.ws);
+      await deliveredBody;
+      expect(reported).toEqual([]);
+
+      const lost = await postToBridge(toolCall(2));
+      const lostBody = drainResponse(lost.response);
+      emitAbnormalClose(lost.ws, 1006, "WebSocket disconnected without sending Close frame.");
+      await lostBody;
+      expect(reported).toEqual([
+        expect.objectContaining({ outstandingCount: 1, reason: "session_reset" }),
+      ]);
+    } finally {
+      delete holder.__executorReportLostCall;
+    }
+  });
+
   it("writes nothing extra when the response was delivered before the close", async () => {
     const { response, ws } = await postToBridge(toolCall(1));
     const drained = drainResponse(response);

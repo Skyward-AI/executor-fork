@@ -1,14 +1,27 @@
+import * as Sentry from "@sentry/cloudflare";
+
 import { makeCloudflareApp } from "./app";
 import {
   cloudflareAccessConfigErrorMessage,
   missingCloudflareAccessVars,
   type CloudflareEnv,
 } from "./config";
+import { McpSessionDO as McpSessionDOBase } from "./mcp";
 import { mcpResourceFromPath } from "./mcp/resource";
+import { reportLostCall } from "./observability";
+import { sentryOptions } from "./sentry";
+
+(globalThis as { __executorReportLostCall?: typeof reportLostCall }).__executorReportLostCall =
+  reportLostCall;
 
 // The MCP Durable Object classes, bound in wrangler.jsonc. They must be exported
-// at the Worker entry module scope for the runtime to find them.
-export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
+// at the Worker entry module scope for the runtime to find them. Wrapping the
+// session DO initialises Sentry inside its isolate.
+export { McpExecutionOwnerDirectoryDO } from "./mcp";
+export const McpSessionDO = Sentry.instrumentDurableObjectWithSentry(
+  sentryOptions,
+  McpSessionDOBase,
+);
 
 // ---------------------------------------------------------------------------
 // The Worker fetch entry. Most requests go to `ExecutorApp.make`'s Effect web
@@ -41,7 +54,7 @@ const accessConfigErrorResponse = (missingVars: readonly string[]): Response =>
     },
   });
 
-export default {
+export default Sentry.withSentry(sentryOptions, {
   fetch: async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
     const missingAccessVars = missingCloudflareAccessVars(env);
     if (missingAccessVars.length > 0) {
@@ -55,4 +68,4 @@ export default {
     }
     return serve.app(request);
   },
-};
+} satisfies ExportedHandler<CloudflareEnv>);
