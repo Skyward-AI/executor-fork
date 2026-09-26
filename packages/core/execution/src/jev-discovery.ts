@@ -1,11 +1,6 @@
 import { Effect } from "effect";
 
-import {
-  askJev,
-  JEV_STATE_CHAR_BUDGET,
-  type JevGatewayConfig,
-  type JevQuestion,
-} from "./jev";
+import { askJev, JEV_STATE_CHAR_BUDGET, type JevGatewayConfig, type JevQuestion } from "./jev";
 import {
   defaultToolDiscoveryProvider,
   matchesNamespace,
@@ -99,9 +94,15 @@ export const makeJevToolDiscoveryProvider = (
           return lexical;
         }
 
+        const listStartedAt = Date.now();
         const all = yield* input.executor.tools
           .list({ includeAnnotations: false })
           .pipe(Effect.orElseSucceed(() => []));
+        yield* Effect.logInfo("jev search listed tools", {
+          tools: all.length,
+          durationMs: Date.now() - listStartedAt,
+          namespace: input.namespace ?? null,
+        });
         const namespace = input.namespace?.trim();
         // Normalised and scoped exactly as the lexical ranker does, so turning Jev
         // on cannot change WHICH tools a namespace search considers.
@@ -140,7 +141,15 @@ export const makeJevToolDiscoveryProvider = (
         // Each shard carries its own question ids, so an answer is resolved
         // against the tools of the shard that asked — a global index would
         // misattribute every score past the first shard.
-        const scoreShard = (tools: readonly SearchableTool[]) =>
+        yield* Effect.logInfo("jev search sharded", {
+          candidates: candidates.length,
+          shards: shards.length,
+          toolsPerShard: shards.map((entry) => entry.length),
+          charsPerShard: shards.map((entry) =>
+            entry.reduce((sum, tool) => sum + describeTool(tool).length + 1, 0),
+          ),
+        });
+        const scoreShard = (tools: readonly SearchableTool[], shardIndex: number) =>
           askJev({
             config: options.gateway,
             state: [
@@ -158,22 +167,29 @@ export const makeJevToolDiscoveryProvider = (
           }).pipe(
             // One failed shard must not lose the others: it contributes nothing
             // and the ranking is built from whatever came back.
+            Effect.tapError((error) =>
+              Effect.logWarning("jev shard failed", {
+                shard: shardIndex,
+                tools: tools.length,
+                message: error.message,
+                status: error.status ?? null,
+              }),
+            ),
             Effect.orElseSucceed(() => []),
             Effect.map((answers) =>
               answers.flatMap((answer) => {
                 const tool = tools[Number(answer.id)];
-                return tool === undefined
-                  ? []
-                  : [{ tool, probability: answer.probability }];
+                return tool === undefined ? [] : [{ tool, probability: answer.probability }];
               }),
             ),
           );
 
-        const scored = (
-          yield* Effect.all(shards.map(scoreShard), {
+        const scored = (yield* Effect.all(
+          shards.map((entry, index) => scoreShard(entry, index)),
+          {
             concurrency: SHARD_CONCURRENCY,
-          })
-        ).flat();
+          },
+        )).flat();
 
         // Jev IS the ranking. Lexical only stands in when Jev produced nothing,
         // which means the gateway failed or every shard came back empty.
@@ -189,6 +205,12 @@ export const makeJevToolDiscoveryProvider = (
               : { description: entry.tool.description }),
           }));
 
+        yield* Effect.logInfo("jev search ranked", {
+          candidates: candidates.length,
+          scored: scored.length,
+          ranked: ranked.length,
+          lexicalFallback: ranked.length === 0,
+        });
         yield* Effect.annotateCurrentSpan({
           "executor.search.jev.attempted": true,
           "executor.search.jev.candidate_count": candidates.length,
@@ -201,8 +223,7 @@ export const makeJevToolDiscoveryProvider = (
           return lexical;
         }
         ranked.sort(
-          (left, right) =>
-            right.score - left.score || left.path.localeCompare(right.path),
+          (left, right) => right.score - left.score || left.path.localeCompare(right.path),
         );
         return paginate(ranked, input.offset, input.limit);
       }),
