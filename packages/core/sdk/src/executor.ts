@@ -4218,10 +4218,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           mode: requestedMode,
         };
         toolProductionInFlight.set(key, entry);
+        const isolateHolder = globalThis as { __executorIsolateId?: string };
+        isolateHolder.__executorIsolateId ??= Math.random().toString(36).slice(2, 10);
         const rebuildFields = {
           integration: String(ref.integration),
           connection: String(ref.name),
           mode: requestedMode,
+          isolateId: isolateHolder.__executorIsolateId,
         };
         const produce = Effect.suspend(() => {
           const startedAt = Date.now();

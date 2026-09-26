@@ -58,15 +58,16 @@ index 571eececebd5a1eaf7f2fbf5278801c4d34728ba..010811ae74ef2d27f12f7fb2506848f1
    setStreamRequestIds(streamId: string, requestIds: RequestId[]): Promise<void>;
    /** Read the persisted `requestIds` for a POST stream. @internal */
 diff --git a/dist/index.js b/dist/index.js
-index f8bbc1a676d9df9d1334c437a7824e0eb9973ccd..83e8c0c3821bdc4a2f15b20717155773db8dc4bf 100644
+index f8bbc1a676d9df9d1334c437a7824e0eb9973ccd..9ed2974ec645fd8e917e275c8e7af35e1336efda 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -956,6 +956,14 @@ var Agent = class Agent extends Server {
+@@ -956,6 +956,15 @@ var Agent = class Agent extends Server {
  					code,
  					reason
  				});
 +				console.warn(JSON.stringify({
 +					event: "agent_connection_closed",
++					isolateId: globalThis.__executorIsolateId ??= Math.random().toString(36).slice(2, 10),
 +					connectionId: connection.id,
 +					streamId: connection.state?.streamId ?? null,
 +					code,
