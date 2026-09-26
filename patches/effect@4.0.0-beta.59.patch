@@ -1,0 +1,13 @@
+diff --git a/dist/Scheduler.js b/dist/Scheduler.js
+index cb4599edcd06bbe68af2f9f22861c99406138f33..b01a0272e2127c6cead3e181c3f453950aec9818 100644
+--- a/dist/Scheduler.js
++++ b/dist/Scheduler.js
+@@ -137,7 +137,7 @@ class MixedSchedulerDispatcher {
+  * @category references
+  */
+ export const MaxOpsBeforeYield = /*#__PURE__*/Context.Reference("effect/Scheduler/MaxOpsBeforeYield", {
+-  defaultValue: () => 2048
++  defaultValue: () => 64
+ });
+ /**
+  * A service reference that controls whether the runtime should bypass scheduler
