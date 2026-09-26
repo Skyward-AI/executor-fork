@@ -1606,6 +1606,15 @@ const makePluginStorageFacade = (input: {
         key === undefined ? true : b("key", "=", key),
       );
 
+  const whereForPrefix =
+    (collection: string, keyPrefix: string | undefined): CoreWhere =>
+    (b: AnyCb) =>
+      b.and(
+        b("plugin_id", "=", input.pluginId),
+        b("collection", "=", collection),
+        keyPrefix === undefined ? true : b("key", "starts with", keyPrefix),
+      );
+
   const whereOwner = (owner: Owner, collection: string, key: string): CoreWhere => {
     const os = ownerSubject(owner);
     return (b: AnyCb) =>
@@ -1813,7 +1822,7 @@ const makePluginStorageFacade = (input: {
       if (validationError) return yield* validationError;
 
       const rows = yield* input.core.findMany("plugin_storage", {
-        where: whereFor(definition.name),
+        where: whereForPrefix(definition.name, queryInput?.keyPrefix),
       });
       const filtered = sortByOwnerPrecedence(rows)
         .filter((row) =>
@@ -1889,7 +1898,7 @@ const makePluginStorageFacade = (input: {
     list: (storageInput) =>
       Effect.gen(function* () {
         const rows = yield* input.core.findMany("plugin_storage", {
-          where: whereFor(storageInput.collection),
+          where: whereForPrefix(storageInput.collection, storageInput.keyPrefix),
         });
         return sortByOwnerPrecedence(rows)
           .filter((row) =>
