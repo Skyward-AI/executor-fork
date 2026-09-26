@@ -427,7 +427,7 @@ describe("agents SSE max-age rotation", () => {
 
     expect(ws.closeCode).toBe(1000);
     expect(ws.closeReason).toBe("SSE response delivered");
-    expect(ws.sent).toEqual([]);
+    expect(ws.sent).toEqual([JSON.stringify({ type: "cf_mcp_dispatch" })]);
   });
 
   it("treats an SSE writer rejection as terminal and does not acknowledge delivery", async () => {
@@ -448,7 +448,7 @@ describe("agents SSE max-age rotation", () => {
     expect(transform.writeCount()).toBe(1);
     expect(transform.abortReason()).toBeInstanceOf(Error);
     expect(ws.closeReason).toBe("SSE client not draining");
-    expect(ws.sent).toEqual([]);
+    expect(ws.sent).toEqual([JSON.stringify({ type: "cf_mcp_dispatch" })]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -472,7 +472,7 @@ describe("agents SSE max-age rotation", () => {
 
     expect(transform.abortReason()).toBeInstanceOf(Error);
     expect(ws.closeCode).toBeUndefined();
-    expect(ws.sent).toEqual([]);
+    expect(ws.sent).toEqual([JSON.stringify({ type: "cf_mcp_dispatch" })]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
