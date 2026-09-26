@@ -798,6 +798,15 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    */
   readonly toolsSyncGraceMs?: number | null;
   /**
+   * How many background catalog rebuilds (stale-catalog refreshes and
+   * background OAuth tool syncs) this executor runs at the same time, across
+   * every read that starts one. A rebuild holds a whole upstream catalog in
+   * memory, so a host whose instance has a small memory limit (a Durable
+   * Object) sets this low: with `1`, many stale catalogs rebuild one after
+   * another instead of together. Defaults to `STALE_TOOLS_SYNC_CONCURRENCY`.
+   */
+  readonly toolsSyncConcurrency?: number;
+  /**
    * How long one instance's claim on a connection's OAuth refresh lasts. The
    * claim is a row in the shared database, so it holds across isolates and
    * replicas: a peer that needs the same connection waits for the holder's
@@ -3882,6 +3891,14 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // — every caller of `persistCatalog` must be outside one, as all of the
     // `produceConnectionTools` call sites are.
     const catalogPersistLock = Semaphore.makeUnsafe(1);
+    // Shared by every background rebuild this executor starts, so overlapping
+    // reads cannot stack more rebuilds in one instance than the configured
+    // width. Taken inside the single-flight run below, never around it: a
+    // queued rebuild stays registered in `toolProductionInFlight`, so a later
+    // read joins it instead of queueing a second copy.
+    const backgroundRebuildPermits = Semaphore.makeUnsafe(
+      Math.max(1, config.toolsSyncConcurrency ?? STALE_TOOLS_SYNC_CONCURRENCY),
+    );
     const persistCatalog = <A, E>(effect: Effect.Effect<A, E>) =>
       catalogPersistLock.withPermits(1)(transaction(effect));
 
@@ -4175,7 +4192,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           mode: requestedMode,
         };
         toolProductionInFlight.set(key, entry);
-        const run = produceConnectionToolsUnshared(integrationRow, ref, () => entry.mode).pipe(
+        const produce = produceConnectionToolsUnshared(integrationRow, ref, () => entry.mode);
+        const run = (
+          requestedMode === "background"
+            ? backgroundRebuildPermits.withPermits(1)(produce)
+            : produce
+        ).pipe(
           Effect.exit,
           Effect.flatMap((exit) => Deferred.done(entry.deferred, exit)),
           Effect.ensuring(Effect.sync(() => void toolProductionInFlight.delete(key))),
@@ -5974,7 +5996,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // connections otherwise pays the sum of every server's latency on the
         // read that trips the TTL. Only the listings overlap — `persistCatalog`
         // keeps the catalog writes in a single-file queue, so this fan-out never
-        // opens two transactions on a one-connection database.
+        // opens two transactions on a one-connection database. How many run
+        // at once is capped executor-wide by `toolsSyncConcurrency`.
         //
         // Two urgency classes. A stale-MARKED or config-revised catalog is known
         // wrong (the upstream said so, or the integration's config changed), so
@@ -5985,6 +6008,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // paid the grace budget for MCP listings it had no reason to wait on.
         const urgent: Effect.Effect<readonly Tool[]>[] = [];
         const deferred: Effect.Effect<readonly Tool[]>[] = [];
+        const urgentRetries: Effect.Effect<readonly Tool[]>[] = [];
+        const deferredRetries: Effect.Effect<readonly Tool[]>[] = [];
+        const retries = (queue: Effect.Effect<readonly Tool[]>[]) =>
+          queue === urgent ? urgentRetries : deferredRetries;
         for (const connection of connections) {
           const integrationRow = integrationBySlug.get(connection.integration);
           if (!integrationRow) continue;
@@ -6015,9 +6042,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             connection.tools_sync_started_at == null
               ? null
               : Number(connection.tools_sync_started_at);
+          // A start stamp from a rebuild this executor is still running is not
+          // a dead attempt: join it (single-flight) rather than skip it.
+          const inFlightHere = toolProductionInFlight.has(
+            `${connection.owner}:${connection.integration}:${connection.name}`,
+          );
           // Every finished attempt clears the start stamp, so a stamp still set
           // is an attempt that never reached the end.
-          if (startedAt !== null && Date.now() - startedAt < TOOLS_SYNC_ATTEMPT_BACKOFF_MS) {
+          if (
+            !inFlightHere &&
+            startedAt !== null &&
+            Date.now() - startedAt < TOOLS_SYNC_ATTEMPT_BACKOFF_MS
+          ) {
             yield* Effect.logWarning(
               "executor stale tool sync skipped: previous attempt unfinished",
               {
@@ -6029,7 +6065,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             continue;
           }
 
-          (staleMarked || configRevised || mode === "converge" ? urgent : deferred).push(
+          // A retry of an attempt that died goes to the back of its queue, so
+          // one catalog that keeps killing its instance cannot keep the others
+          // from building first.
+          const queue = staleMarked || configRevised || mode === "converge" ? urgent : deferred;
+          const retryOfDeadAttempt = !inFlightHere && startedAt !== null;
+          (retryOfDeadAttempt ? retries(queue) : queue).push(
             produceConnectionTools(
               integrationRow,
               {
@@ -6060,6 +6101,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ),
           );
         }
+        urgent.push(...urgentRetries);
+        deferred.push(...deferredRetries);
+        // Urgent rebuilds are forked first so they reach the shared rebuild
+        // permits ahead of the deferred ones the read does not wait on.
+        const urgentFiber = yield* Effect.forkChild(
+          Effect.all(urgent, { concurrency: STALE_TOOLS_SYNC_CONCURRENCY }),
+        );
         if (deferred.length > 0) {
           const background = yield* Effect.forkDetach(
             Effect.all(deferred, { concurrency: STALE_TOOLS_SYNC_CONCURRENCY }),
@@ -6068,9 +6116,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             new Promise<void>((resolve) => background.addObserver(() => resolve(undefined))),
           );
         }
-        yield* Effect.all(urgent, {
-          concurrency: STALE_TOOLS_SYNC_CONCURRENCY,
-        });
+        yield* Fiber.join(urgentFiber);
       });
 
     // How long a tools read waits for the stale sync before answering from
