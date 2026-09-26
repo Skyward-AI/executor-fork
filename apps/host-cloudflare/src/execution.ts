@@ -56,6 +56,11 @@ export const makeCloudflareHostConfig = (config: CloudflareConfig): Layer.Layer<
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
+    // Each MCP session's executor lives in a Durable Object with a small memory
+    // limit, and one rebuild holds a whole catalog (a large OpenAPI spec) in
+    // memory. Rebuild stale catalogs one at a time so many of them cannot take
+    // the session down together.
+    toolsSyncConcurrency: 1,
     // Absent unless both gateway ids are set, which leaves search lexical.
     ...(config.jevGateway === undefined ? {} : { jevGateway: config.jevGateway }),
   });

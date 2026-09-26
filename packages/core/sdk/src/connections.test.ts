@@ -2114,6 +2114,145 @@ describe("tool catalog sync safety", () => {
       ),
   );
 
+  it.live(
+    "a read over many stale catalogs rebuilds them one at a time and answers without waiting for all of them",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const names = ["a", "b", "c", "d", "e"];
+          let parked = false;
+          const release = yield* Deferred.make<void>();
+          let inFlight = 0;
+          let maxInFlight = 0;
+          const rebuilt: string[] = [];
+          const heavyPlugin = definePlugin(() => ({
+            id: "heavy" as const,
+            credentialProviders: [memoryProvider()],
+            storage: () => ({}),
+            resolveTools: ({ connection }) =>
+              Effect.gen(function* () {
+                inFlight += 1;
+                maxInFlight = Math.max(maxInFlight, inFlight);
+                if (parked) yield* Deferred.await(release);
+                inFlight -= 1;
+                if (parked) rebuilt.push(String(connection.name));
+                return { tools: [{ name: ToolName.make("deploy"), description: "deploy" }] };
+              }),
+            invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+            extension: (ctx) => ({
+              seed: () =>
+                ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+            }),
+          }))();
+          const config = makeTestConfig({ plugins: [heavyPlugin] as const });
+          const executor = yield* createExecutor({
+            ...config,
+            toolsSyncConcurrency: 1,
+            toolsSyncGraceMs: 50,
+          });
+          yield* executor.heavy.seed();
+          for (const name of names) {
+            yield* executor.connections.create({
+              owner: "org",
+              name: ConnectionName.make(name),
+              integration: INTEG,
+              template: TEMPLATE,
+              value: "secret-token",
+            });
+          }
+          parked = true;
+          yield* Effect.promise(() =>
+            config.db.updateMany("connection", {
+              where: (b) => b("integration", "=", String(INTEG)),
+              set: { tools_synced_at: null },
+            }),
+          );
+
+          const firstRead = yield* executor.tools
+            .list({ integration: INTEG })
+            .pipe(Effect.timeoutOption("2 seconds"));
+          const secondRead = yield* executor.tools
+            .list({ integration: INTEG })
+            .pipe(Effect.timeoutOption("2 seconds"));
+          expect(
+            Option.map(firstRead, (tools) => tools.length),
+            "the read answers from the persisted rows while the rebuilds wait",
+          ).toEqual(Option.some(5));
+          expect(Option.isSome(secondRead)).toBe(true);
+          expect(maxInFlight, "only one rebuild runs at a time, across both reads").toBe(1);
+
+          yield* Deferred.succeed(release, undefined);
+          yield* Effect.sync(() => rebuilt.length).pipe(
+            Effect.repeat({ until: (count) => count >= 5, schedule: Schedule.spaced("10 millis") }),
+            Effect.timeout("5 seconds"),
+          );
+          yield* Effect.sleep("100 millis");
+          expect(
+            [...rebuilt].sort(),
+            "every catalog rebuilds exactly once; the second read joined the queued rebuilds",
+          ).toEqual(names);
+          expect(maxInFlight).toBe(1);
+        }),
+      ),
+  );
+
+  it.effect("a retry of a sync that never finished rebuilds after the other stale catalogs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let recording = false;
+        const order: string[] = [];
+        const orderedPlugin = definePlugin(() => ({
+          id: "ordered" as const,
+          credentialProviders: [memoryProvider()],
+          storage: () => ({}),
+          resolveTools: ({ connection }) =>
+            Effect.sync(() => {
+              if (recording) order.push(String(connection.name));
+              return { tools: [{ name: ToolName.make("deploy"), description: "deploy" }] };
+            }),
+          invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+          }),
+        }))();
+        const config = makeTestConfig({ plugins: [orderedPlugin] as const });
+        const executor = yield* createExecutor({
+          ...config,
+          toolsSyncConcurrency: 1,
+          toolsSyncGraceMs: null,
+        });
+        yield* executor.ordered.seed();
+        for (const name of ["crashed", "healthy"]) {
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make(name),
+            integration: INTEG,
+            template: TEMPLATE,
+            value: "secret-token",
+          });
+        }
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("integration", "=", String(INTEG)),
+            set: { tools_synced_at: null },
+          }),
+        );
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b.and(b("integration", "=", String(INTEG)), b("name", "=", "crashed")),
+            set: { tools_sync_started_at: Date.now() - 16 * 60_000 },
+          }),
+        );
+        recording = true;
+
+        yield* executor.tools.list({ integration: INTEG });
+        yield* executor.tools.list({ integration: INTEG });
+        expect(order).toEqual(["healthy", "crashed"]);
+      }),
+    ),
+  );
+
   it.effect(
     "background sync preserves a nonzero remote catalog when a plugin returns authoritative empty",
     () =>
