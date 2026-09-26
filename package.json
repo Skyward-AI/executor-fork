@@ -139,7 +139,6 @@
     "agents@0.17.3": "patches/agents@0.17.3.patch",
     "libsql@0.5.29": "patches/libsql@0.5.29.patch",
     "@electric-sql/pglite-socket@0.1.4": "patches/@electric-sql%2Fpglite-socket@0.1.4.patch",
-    "@modelcontextprotocol/client@2.0.0": "patches/@modelcontextprotocol%2Fclient@2.0.0.patch",
-    "effect@4.0.0-beta.59": "patches/effect@4.0.0-beta.59.patch"
+    "@modelcontextprotocol/client@2.0.0": "patches/@modelcontextprotocol%2Fclient@2.0.0.patch"
   }
 }
