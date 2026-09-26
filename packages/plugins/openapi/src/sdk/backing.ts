@@ -278,7 +278,7 @@ export const compileOpenApiSpec = (
  * covers the handful of integrations a page's probes touch at once while
  * keeping worst-case retention to a few compiled documents.
  */
-const COMPILED_SPEC_CACHE_CAPACITY = 4;
+const COMPILED_SPEC_CACHE_CAPACITY = 0;
 const compiledSpecCache = new Map<string, CompiledOpenApiSpec>();
 
 /** Test-only reset so unit tests can observe cold-cache behavior. */
@@ -295,6 +295,12 @@ export const compileOpenApiSpecCached = (
   specText: string,
 ): Effect.Effect<CompiledOpenApiSpec, OpenApiParseError | OpenApiExtractionError> =>
   Effect.gen(function* () {
+    yield* Effect.logInfo("openapi spec compile", {
+      specHash: specHash ?? null,
+      specChars: specText.length,
+      cached: specHash != null && compiledSpecCache.has(specHash),
+      cacheSize: compiledSpecCache.size,
+    });
     if (specHash == null) return yield* compileOpenApiSpec(specText);
     const hit = compiledSpecCache.get(specHash);
     if (hit !== undefined) {
