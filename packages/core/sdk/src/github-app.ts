@@ -59,13 +59,13 @@ const PKCS8_RSA_PREAMBLE = [
  * WebCrypto's `importKey` only accepts `pkcs8`. The wrap is a fixed ASN.1
  * envelope around the original bytes, so it is a re-encoding, not a conversion.
  */
-const pkcs1ToPkcs8 = (pkcs1: Uint8Array): Uint8Array => {
+const pkcs1ToPkcs8 = (pkcs1: Uint8Array): Uint8Array<ArrayBuffer> => {
   const body = [...PKCS8_RSA_PREAMBLE, 0x04, ...derLength(pkcs1.length), ...pkcs1];
   return new Uint8Array([0x30, ...derLength(body.length), ...body]);
 };
 
 /** Decode a PEM body to DER, wrapping PKCS#1 keys so WebCrypto accepts them. */
-const derFromPem = (pem: string): Uint8Array => {
+const derFromPem = (pem: string): Uint8Array<ArrayBuffer> => {
   const body = pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
   const der = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
   return /BEGIN RSA PRIVATE KEY/.test(pem) ? pkcs1ToPkcs8(der) : der;
