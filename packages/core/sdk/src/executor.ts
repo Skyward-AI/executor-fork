@@ -4070,6 +4070,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ),
           );
 
+        yield* Effect.logInfo("executor catalog rebuild resolved", {
+          integration: String(ref.integration),
+          connection: String(ref.name),
+          tools: result.tools.length,
+          definitions: Object.keys(result.definitions ?? {}).length,
+          incomplete: result.incomplete === true,
+        });
         if (result.incomplete === true) {
           // Non-authoritative listing (integration unreachable, auth not ready).
           // Keep the existing catalog — replacing it would wipe working tools
@@ -4136,6 +4143,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
+        const largestJsonChars = (values: readonly unknown[]) =>
+          values.reduce<number>(
+            (max, value) => Math.max(max, JSON.stringify(value ?? null).length),
+            0,
+          );
+        yield* Effect.logInfo("executor catalog rebuild persisting", {
+          integration: String(ref.integration),
+          connection: String(ref.name),
+          toolRows: toolRows.length,
+          definitionRows: definitionRows.length,
+          largestToolSchemaChars: largestJsonChars(
+            toolRows.flatMap((row) => [row.input_schema, row.output_schema]),
+          ),
+          largestDefinitionChars: largestJsonChars(definitionRows.map((row) => row.schema)),
+        });
         yield* persistCatalog(
           Effect.gen(function* () {
             yield* core.deleteMany("tool", { where });
@@ -4145,6 +4167,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             yield* stampSynced(existingRow);
           }),
         );
+        yield* Effect.logInfo("executor catalog rebuild persisted", {
+          integration: String(ref.integration),
+          connection: String(ref.name),
+        });
 
         return result.tools.map((tool: ToolDef) =>
           rowToTool(
