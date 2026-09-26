@@ -69,10 +69,7 @@ export interface AskJevOptions {
 export const jevGatewayUrl = (config: JevGatewayConfig): string =>
   `https://gateway.ai.cloudflare.com/v1/${config.accountId}/${config.gatewayId}/custom-typesafe/v1/systemone`;
 
-const overBudget = (
-  state: string,
-  questions: readonly JevQuestion[],
-): string | null => {
+const overBudget = (state: string, questions: readonly JevQuestion[]): string | null => {
   const longest = questions.reduce(
     (max, question) => Math.max(max, question.instructions.length),
     0,
@@ -124,9 +121,7 @@ const readAnswers = (body: unknown): readonly JevAnswer[] => {
  * scored; a question it declines to score is simply absent rather than zero, so
  * a caller can tell "not relevant" from "no opinion".
  */
-export const askJev = (
-  options: AskJevOptions,
-): Effect.Effect<readonly JevAnswer[], JevError> =>
+export const askJev = (options: AskJevOptions): Effect.Effect<readonly JevAnswer[], JevError> =>
   Effect.gen(function* () {
     if (options.questions.length === 0) {
       return [];
@@ -167,9 +162,7 @@ export const askJev = (
     const request = HttpClientRequest.post(jevGatewayUrl(options.config)).pipe(
       HttpClientRequest.setHeaders({
         "Content-Type": "application/json",
-        ...(token === undefined
-          ? {}
-          : { "cf-aig-authorization": `Bearer ${token}` }),
+        ...(token === undefined ? {} : { "cf-aig-authorization": `Bearer ${token}` }),
       }),
       HttpClientRequest.bodyJsonUnsafe({
         model: JEV_MODEL,
@@ -178,11 +171,16 @@ export const askJev = (
       }),
     );
 
-    const response = yield* client.execute(request).pipe(
-      Effect.mapError(
-        (cause) => new JevError({ message: "Jev request failed", cause }),
-      ),
-    );
+    const requestStartedAt = Date.now();
+    const response = yield* client
+      .execute(request)
+      .pipe(Effect.mapError((cause) => new JevError({ message: "Jev request failed", cause })));
+    yield* Effect.logInfo("jev call answered", {
+      status: response.status,
+      durationMs: Date.now() - requestStartedAt,
+      stateChars: options.state.length,
+      questions: options.questions.length,
+    });
     if (response.status < 200 || response.status >= 300) {
       return yield* new JevError({
         message: `Jev returned ${response.status}`,
@@ -190,11 +188,12 @@ export const askJev = (
       });
     }
     const body = yield* response.json.pipe(
-      Effect.mapError(
-        (cause) => new JevError({ message: "Jev response was not JSON", cause }),
-      ),
+      Effect.mapError((cause) => new JevError({ message: "Jev response was not JSON", cause })),
     );
-    return readAnswers(body);
-  }).pipe(
-    Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer),
-  );
+    const answers = readAnswers(body);
+    yield* Effect.logInfo("jev call parsed", {
+      answers: answers.length,
+      questions: options.questions.length,
+    });
+    return answers;
+  }).pipe(Effect.provide(options.httpClientLayer ?? FetchHttpClient.layer));

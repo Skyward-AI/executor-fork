@@ -4192,7 +4192,31 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           mode: requestedMode,
         };
         toolProductionInFlight.set(key, entry);
-        const produce = produceConnectionToolsUnshared(integrationRow, ref, () => entry.mode);
+        const rebuildFields = {
+          integration: String(ref.integration),
+          connection: String(ref.name),
+          mode: requestedMode,
+        };
+        const produce = Effect.suspend(() => {
+          const startedAt = Date.now();
+          return Effect.logInfo("executor catalog rebuild started", rebuildFields).pipe(
+            Effect.andThen(produceConnectionToolsUnshared(integrationRow, ref, () => entry.mode)),
+            Effect.tap((tools) =>
+              Effect.logInfo("executor catalog rebuild finished", {
+                ...rebuildFields,
+                tools: tools.length,
+                durationMs: Date.now() - startedAt,
+              }),
+            ),
+            Effect.tapCause((cause) =>
+              Effect.logWarning("executor catalog rebuild failed", {
+                ...rebuildFields,
+                durationMs: Date.now() - startedAt,
+                cause: String(cause).slice(0, 500),
+              }),
+            ),
+          );
+        });
         const run = (
           requestedMode === "background"
             ? backgroundRebuildPermits.withPermits(1)(produce)
