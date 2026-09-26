@@ -147,14 +147,30 @@ export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): 
     ...(operation.description !== undefined ? { description: operation.description } : {}),
   });
 
-  const listRows = (integration: string) =>
+  const belongsTo = (row: PluginStorageEntry, integration: string): boolean => {
+    const decoded = decodeOperationStorage(row.data);
+    return Option.isSome(decoded) && decoded.value.integration === integration;
+  };
+
+  const listRowsWithPrefix = (integration: string, keyPrefix: string) =>
     pluginStorage
-      .list({ collection: OPERATION_COLLECTION })
+      .list({ collection: OPERATION_COLLECTION, keyPrefix })
       .pipe(
         Effect.map((rows: readonly PluginStorageEntry[]) =>
-          rows.filter((row) => rowToOperation(row)?.integration === integration),
+          rows.filter((row) => belongsTo(row, integration)),
         ),
       );
+
+  const listRows = (integration: string) =>
+    Effect.all([
+      listRowsWithPrefix(integration, `${OPERATION_KEY_VERSION}.${stableKeyHash(integration)}.`),
+      listRowsWithPrefix(integration, `${integration}.`),
+    ]).pipe(
+      Effect.map(([current, legacy]) => {
+        const seen = new Set(current.map((row) => row.key));
+        return [...current, ...legacy.filter((row) => !seen.has(row.key))];
+      }),
+    );
 
   const removeOperations = (integration: string) =>
     Effect.gen(function* () {
