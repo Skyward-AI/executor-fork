@@ -24,6 +24,7 @@
     "./presets": "./src/sdk/presets.ts",
     "./providers/google": "./src/providers/google/index.ts",
     "./providers/microsoft": "./src/providers/microsoft/index.ts",
+    "./providers/slack": "./src/providers/slack/index.ts",
     "./testing": "./src/testing/index.ts"
   },
   "publishConfig": {
@@ -57,6 +58,12 @@
         "import": {
           "types": "./dist/providers/microsoft/index.d.ts",
           "default": "./dist/providers/microsoft.js"
+        }
+      },
+      "./providers/slack": {
+        "import": {
+          "types": "./dist/providers/slack/index.d.ts",
+          "default": "./dist/providers/slack.js"
         }
       },
       "./testing": {

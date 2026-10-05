@@ -7,6 +7,7 @@ export default defineConfig({
     client: "src/react/plugin-client.tsx",
     "providers/google": "src/providers/google/index.ts",
     "providers/microsoft": "src/providers/microsoft/index.ts",
+    "providers/slack": "src/providers/slack/index.ts",
     testing: "src/testing/index.ts",
   },
   format: ["esm"],
