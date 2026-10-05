@@ -8,6 +8,7 @@ import {
   microsoftCatalog,
   microsoftGraphAdapter,
 } from "@executor-js/plugin-openapi/providers/microsoft";
+import { slackWebApiAdapter } from "@executor-js/plugin-openapi/providers/slack";
 import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
 import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
@@ -37,7 +38,7 @@ export default defineExecutorConfig({
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
-        specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
+        specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter, slackWebApiAdapter],
       }),
       mcpHttpPlugin({
         dangerouslyAllowStdioMCP: process.env.EXECUTOR_ALLOW_STDIO_MCP === "true",
