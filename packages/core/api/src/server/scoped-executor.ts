@@ -49,6 +49,7 @@ import {
   makeHostedFetch,
   makeHostedHttpClientLayer,
   touchSubject,
+  type HostedInternalHosts,
 } from "@executor-js/sdk/host-internal";
 
 import { DbProvider } from "./executor-fuma-db";
@@ -65,6 +66,13 @@ export interface HostConfigShape {
    * production hosts leave it off. Drives `makeHostedHttpClientLayer`.
    */
   readonly allowLocalNetwork: boolean;
+  /**
+   * Private hosts served by a service binding, keyed by exact lowercase hostname
+   * (`tools.internal`). Requests to them skip the network and the SSRF guard; any
+   * other `*.internal` host is refused. Applies to the MCP transport and to the
+   * plain fetch (OAuth discovery, probes).
+   */
+  readonly internalHosts?: HostedInternalHosts;
   /**
    * AI Gateway for the Jev classifier. Present only on a host that configured
    * one; absent leaves tool search purely lexical, which is the correct default
@@ -330,6 +338,7 @@ export const makeScopedExecutor = <
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
       requireTls: config.requireTls,
+      internalHosts: config.internalHosts,
     };
     const httpClientLayer = makeHostedHttpClientLayer(hostedHttpOptions);
     const hostedFetch = makeHostedFetch(hostedHttpOptions);
@@ -435,6 +444,7 @@ export const makePlatformExecutor = (
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
       requireTls: config.requireTls,
+      internalHosts: config.internalHosts,
     };
 
     return yield* createExecutor({
