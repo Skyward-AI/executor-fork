@@ -1,3 +1,4 @@
+import { Option, Schema } from "effect";
 import type { D1Database, DurableObjectNamespace, R2Bucket } from "@cloudflare/workers-types";
 
 import type { JevGatewayConfig } from "@executor-js/execution";
@@ -74,6 +75,14 @@ export interface CloudflareEnv {
    */
   readonly INTERNAL_MCP_HOSTS?: string;
   /**
+   * JSON array of registries, one per internal host:
+   * `[{"host":"tools.internal","servers":[{"slug","name","description","route"}]}]`.
+   * Each server becomes an org-level MCP integration at `https://<host><route>`,
+   * created at boot when its slug does not exist yet. Every `host` must be a key
+   * of `INTERNAL_MCP_HOSTS`.
+   */
+  readonly INTERNAL_MCP_REGISTRIES?: string;
+  /**
    * Cloudflare AI Gateway, for the Jev classifier (`custom-typesafe`). Every
    * model call goes through a gateway rather than a provider directly, so the
    * key stays in the gateway's BYOK store and never in a worker var — which is
@@ -116,6 +125,8 @@ export interface CloudflareConfig {
   readonly allowLocalNetwork: boolean;
   /** Internal MCP hosts mapped to their service bindings (see `INTERNAL_MCP_HOSTS`). */
   readonly internalHosts: HostedInternalHosts;
+  /** Integrations declared by `INTERNAL_MCP_REGISTRIES`, ready to reconcile. */
+  readonly internalIntegrations: readonly InternalIntegration[];
   /** Explicit web base URL (`VITE_PUBLIC_SITE_URL`). Unset on a Worker with no
    *  static URL — the per-request origin is used instead (see RequestWebOrigin). */
   readonly webBaseUrl?: string;
@@ -235,6 +246,79 @@ const resolveInternalHosts = (env: CloudflareConfigEnv): HostedInternalHosts => 
   return hosts;
 };
 
+export interface InternalIntegration {
+  readonly slug: string;
+  readonly name: string;
+  readonly description: string;
+  readonly endpoint: string;
+}
+
+const InternalRegistries = Schema.Array(
+  Schema.Struct({
+    host: Schema.String,
+    servers: Schema.Array(
+      Schema.Struct({
+        slug: Schema.String,
+        name: Schema.String,
+        description: Schema.String,
+        route: Schema.String,
+      }),
+    ),
+  }),
+);
+
+const decodeInternalRegistries = Schema.decodeUnknownOption(
+  Schema.fromJsonString(InternalRegistries),
+);
+
+const INTERNAL_SLUG = /^[a-z][a-z0-9_]*$/;
+
+const resolveInternalIntegrations = (
+  env: CloudflareConfigEnv,
+  internalHosts: HostedInternalHosts,
+): readonly InternalIntegration[] => {
+  const raw = (env.INTERNAL_MCP_REGISTRIES ?? "").trim();
+  if (raw.length === 0) return [];
+  const refuse = (message: string): never => {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: a malformed internal registry must fail the boot, not drop integrations silently
+    throw new Error(`INTERNAL_MCP_REGISTRIES ${message}`);
+  };
+  const registries = decodeInternalRegistries(raw);
+  if (Option.isNone(registries)) {
+    return refuse(
+      "must be a JSON array of { host, servers: [{ slug, name, description, route }] } objects",
+    );
+  }
+  const seen = new Set<string>();
+  const integrations: InternalIntegration[] = [];
+  for (const registry of registries.value) {
+    const host = normalizeHostname(registry.host);
+    if (!Object.hasOwn(internalHosts, host)) {
+      refuse(`names host ${host}, but INTERNAL_MCP_HOSTS has no entry for it`);
+    }
+    for (const server of registry.servers) {
+      if (!INTERNAL_SLUG.test(server.slug)) {
+        refuse(`slug ${JSON.stringify(server.slug)} must match ^[a-z][a-z0-9_]*$`);
+      }
+      if (server.route !== `/mcp/${server.slug}`) {
+        refuse(`route ${JSON.stringify(server.route)} must be /mcp/${server.slug}`);
+      }
+      if (server.name.trim().length === 0 || server.description.trim().length === 0) {
+        refuse(`slug ${server.slug} needs a non-empty name and description`);
+      }
+      if (seen.has(server.slug)) refuse(`slug ${server.slug} is declared more than once`);
+      seen.add(server.slug);
+      integrations.push({
+        slug: server.slug,
+        name: server.name,
+        description: server.description,
+        endpoint: `https://${host}${server.route}`,
+      });
+    }
+  }
+  return integrations;
+};
+
 export interface LoadConfigOptions {
   /** Build the trusted config for the service-binding entrypoint (see
    *  {@link CloudflareConfig.trustedInternal}). */
@@ -270,6 +354,7 @@ export const loadConfig = (
       }),
     );
   }
+  const internalHosts = resolveInternalHosts(env);
   return {
     accessTeamDomain,
     accessAud,
@@ -282,7 +367,8 @@ export const loadConfig = (
     organizationSlug: resolveOrgSlug(env.SELF_HOSTED_ORG_SLUG),
     secretKey,
     allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
-    internalHosts: resolveInternalHosts(env),
+    internalHosts,
+    internalIntegrations: resolveInternalIntegrations(env, internalHosts),
     // Pinned origin via the shared resolver. A Worker receives no PaaS platform
     // vars (env: {} — there is nothing to detect), so only the explicit
     // VITE_PUBLIC_SITE_URL applies; when it's unset we leave webBaseUrl undefined

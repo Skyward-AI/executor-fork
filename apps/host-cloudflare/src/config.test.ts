@@ -156,3 +156,57 @@ describe("INTERNAL_MCP_HOSTS", () => {
     );
   });
 });
+
+describe("INTERNAL_MCP_REGISTRIES", () => {
+  const TOOLS = { fetch: async () => new Response("ok") };
+  const REGISTRIES =
+    '[{"host":"tools.internal","servers":[{"slug":"websearch","name":"Web Search","description":"Search the web","route":"/mcp/websearch"}]}]';
+  const devEnv = (overrides: Record<string, unknown>): ConfigEnv =>
+    Object.assign(makeEnv({ ENABLE_DEV_AUTH: "true" }), overrides);
+  const withHosts = (registries: string) =>
+    devEnv({
+      INTERNAL_MCP_HOSTS: "tools.internal=TOOLS",
+      INTERNAL_MCP_REGISTRIES: registries,
+      TOOLS,
+    });
+
+  it("derives one integration per declared server", () => {
+    expect(loadConfig(withHosts(REGISTRIES)).internalIntegrations).toEqual([
+      {
+        slug: "websearch",
+        name: "Web Search",
+        description: "Search the web",
+        endpoint: "https://tools.internal/mcp/websearch",
+      },
+    ]);
+  });
+
+  it("declares nothing when the variable is unset", () => {
+    expect(loadConfig(devEnv({})).internalIntegrations).toEqual([]);
+  });
+
+  it("fails loudly when a registry host has no INTERNAL_MCP_HOSTS entry", () => {
+    expect(() => loadConfig(devEnv({ INTERNAL_MCP_REGISTRIES: REGISTRIES }))).toThrowError(
+      "INTERNAL_MCP_REGISTRIES names host tools.internal, but INTERNAL_MCP_HOSTS has no entry for it",
+    );
+  });
+
+  it("refuses a route that is not /mcp/<slug>", () => {
+    expect(() =>
+      loadConfig(withHosts(REGISTRIES.replace("/mcp/websearch", "/other"))),
+    ).toThrowError('INTERNAL_MCP_REGISTRIES route "/other" must be /mcp/websearch');
+  });
+
+  it("refuses a duplicate slug", () => {
+    const server = '{"slug":"a","name":"A","description":"d","route":"/mcp/a"}';
+    expect(() =>
+      loadConfig(withHosts(`[{"host":"tools.internal","servers":[${server},${server}]}]`)),
+    ).toThrowError("INTERNAL_MCP_REGISTRIES slug a is declared more than once");
+  });
+
+  it("refuses a value that is not the registry shape", () => {
+    expect(() => loadConfig(withHosts('{"host":"tools.internal"}'))).toThrowError(
+      "INTERNAL_MCP_REGISTRIES must be a JSON array of { host, servers: [{ slug, name, description, route }] } objects",
+    );
+  });
+});

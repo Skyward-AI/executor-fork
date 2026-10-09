@@ -16,6 +16,7 @@ const config: CloudflareConfig = {
   secretKey: "x".repeat(32),
   allowLocalNetwork: false,
   internalHosts: {},
+  internalIntegrations: [],
   webBaseUrl: "https://localhost",
   enableDevAuth: false,
 };
