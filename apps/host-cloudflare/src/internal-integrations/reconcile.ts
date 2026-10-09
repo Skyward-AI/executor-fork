@@ -11,7 +11,7 @@ import type { InternalIntegration } from "../config";
 
 export const INTERNAL_CONNECTION_NAME = "main";
 
-export type ReconcileOutcome = "created" | "skipped" | "failed";
+export type ReconcileOutcome = "created" | "refreshed" | "skipped" | "failed";
 
 export interface InternalIntegrationExecutor {
   readonly integrations: {
@@ -40,11 +40,30 @@ export interface InternalIntegrationExecutor {
   };
 }
 
-const reconcileOne = (executor: InternalIntegrationExecutor, entry: InternalIntegration) =>
+const storedEndpoint = (integration: unknown): string | undefined => {
+  if (typeof integration !== "object" || integration === null) return undefined;
+  const url: unknown = Reflect.get(integration, "displayUrl");
+  return typeof url === "string" ? url : undefined;
+};
+
+const reconcileOne = (
+  executor: InternalIntegrationExecutor,
+  entry: InternalIntegration,
+  refreshExisting: boolean,
+) =>
   Effect.gen(function* () {
     const slug = IntegrationSlug.make(entry.slug);
     const existing = yield* executor.integrations.get(slug);
     if (existing !== null && existing !== undefined) {
+      if (refreshExisting && storedEndpoint(existing) === entry.endpoint) {
+        yield* executor.connections.refresh({
+          owner: "org",
+          integration: slug,
+          name: ConnectionName.make(INTERNAL_CONNECTION_NAME),
+        });
+        yield* Effect.logInfo(`internal integration ${entry.slug} catalog refreshed`);
+        return "refreshed" as const;
+      }
       yield* Effect.logInfo(`internal integration ${entry.slug} already exists, left untouched`);
       return "skipped" as const;
     }
@@ -78,13 +97,55 @@ const reconcileOne = (executor: InternalIntegrationExecutor, entry: InternalInte
 
 /**
  * Creates each declared integration that does not exist yet, with its org
- * connection `main`, and loads its tools. Never updates or deletes anything,
- * and never fails the caller.
+ * connection `main`, and loads its tools. With `refreshExisting`, also refreshes
+ * the `main` connection of an existing integration whose stored endpoint equals
+ * the declared one. Never updates or deletes anything, and never fails the caller.
  */
 export const reconcileInternalIntegrations = (
   executor: InternalIntegrationExecutor,
   entries: readonly InternalIntegration[],
+  options: { readonly refreshExisting?: boolean } = {},
 ): Effect.Effect<ReadonlyArray<readonly [string, ReconcileOutcome]>> =>
   Effect.forEach(entries, (entry) =>
-    reconcileOne(executor, entry).pipe(Effect.map((outcome) => [entry.slug, outcome] as const)),
+    reconcileOne(executor, entry, options.refreshExisting === true).pipe(
+      Effect.map((outcome) => [entry.slug, outcome] as const),
+    ),
   );
+
+export const REFRESHED_VERSION_KEY = "internal-integrations/refreshed-version";
+
+export interface RefreshedVersionStore {
+  readonly get: (key: string) => Promise<{ readonly text: () => Promise<string> } | null>;
+  readonly put: (key: string, value: string) => Promise<unknown>;
+}
+
+const warnStore = (message: string) => (cause: unknown) =>
+  Effect.logWarning(message, cause).pipe(Effect.annotateLogs({ step: "internal-catalog-refresh" }));
+
+/** True unless the stored version id equals `versionId`; any doubt means refresh. */
+export const needsCatalogRefresh = (
+  versionId: string | undefined,
+  store: RefreshedVersionStore | undefined,
+): Effect.Effect<boolean> => {
+  if (versionId === undefined || store === undefined) return Effect.succeed(true);
+  return Effect.tryPromise(async () => {
+    const stored = await store.get(REFRESHED_VERSION_KEY);
+    return stored === null ? undefined : await stored.text();
+  }).pipe(
+    Effect.map((stored) => stored !== versionId),
+    Effect.catch((cause) =>
+      warnStore("refreshed version could not be read, refreshing")(cause).pipe(Effect.as(true)),
+    ),
+  );
+};
+
+export const recordRefreshedVersion = (
+  versionId: string | undefined,
+  store: RefreshedVersionStore | undefined,
+): Effect.Effect<void> => {
+  if (versionId === undefined || store === undefined) return Effect.void;
+  return Effect.tryPromise(() => store.put(REFRESHED_VERSION_KEY, versionId)).pipe(
+    Effect.asVoid,
+    Effect.catch(warnStore("refreshed version could not be recorded")),
+  );
+};

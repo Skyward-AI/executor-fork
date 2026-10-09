@@ -10,7 +10,11 @@ import {
 } from "@executor-js/api/server";
 
 import { internalPrincipal } from "./auth/cloudflare-access";
-import { reconcileInternalIntegrations } from "./internal-integrations/reconcile";
+import {
+  needsCatalogRefresh,
+  reconcileInternalIntegrations,
+  recordRefreshedVersion,
+} from "./internal-integrations/reconcile";
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
 import { makeCloudflarePlugins, type CloudflarePlugins } from "./plugins";
 import { createD1ExecutorDb } from "./db/d1";
@@ -43,10 +47,12 @@ import { preloadQuickJs } from "./quickjs";
 
 let internalIntegrationsReconciled: Promise<void> | null = null;
 
-// Once per isolate, by a system executor that may write org rows. Never fails the boot.
+// Once per isolate, by a system executor that may write org rows. Also refreshes
+// existing declared catalogs once per deployed version. Never fails the boot.
 const reconcileOncePerIsolate = (
   config: CloudflareConfig,
   dbHandle: ExecutorDbHandle,
+  env: CloudflareEnv,
 ): Promise<void> => {
   if (config.internalIntegrations.length === 0) return Promise.resolve();
   internalIntegrationsReconciled ??= Effect.runPromise(
@@ -59,9 +65,12 @@ const reconcileOncePerIsolate = (
         config.organizationName,
         { orgWrites: "allowed" },
       );
-      yield* reconcileInternalIntegrations(executor, config.internalIntegrations).pipe(
-        Effect.ensuring(executor.close().pipe(Effect.ignore)),
-      );
+      const versionId = env.CF_VERSION_METADATA?.id;
+      const refreshExisting = yield* needsCatalogRefresh(versionId, env.BLOBS);
+      yield* reconcileInternalIntegrations(executor, config.internalIntegrations, {
+        refreshExisting,
+      }).pipe(Effect.ensuring(executor.close().pipe(Effect.ignore)));
+      if (refreshExisting) yield* recordRefreshedVersion(versionId, env.BLOBS);
     }).pipe(
       Effect.provide(dbProviderLayer(Effect.succeed(dbHandle))),
       Effect.provide(makeCloudflarePluginsProvider(config)),
@@ -89,7 +98,7 @@ export const makeCloudflareApp = async (
   // Open and idempotently bring up the D1 schema once. This is the long-lived
   // handle the per-request scoped executor reads through the DbProvider seam.
   const dbHandle = await createD1ExecutorDb(env.DB, env.BLOBS);
-  await reconcileOncePerIsolate(config, dbHandle);
+  await reconcileOncePerIsolate(config, dbHandle, env);
   const identityLayer = cloudflareAccessIdentityLayer(config);
   const mcpAgentHandler = makeCloudflareMcpAgentHandler(config);
   const approvalHandler = makeCloudflareApprovalHandler(config, env);
