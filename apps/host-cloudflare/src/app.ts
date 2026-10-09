@@ -10,7 +10,8 @@ import {
 } from "@executor-js/api/server";
 
 import { internalPrincipal } from "./auth/cloudflare-access";
-import { reconcileForVersion } from "./internal-integrations/reconcile";
+import { reconcileInternalIntegrations } from "./internal-integrations/reconcile";
+import { makeInternalListTools } from "./internal-integrations/list-tools";
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
 import { makeCloudflarePlugins, type CloudflarePlugins } from "./plugins";
 import { createD1ExecutorDb } from "./db/d1";
@@ -44,7 +45,7 @@ import { preloadQuickJs } from "./quickjs";
 let internalIntegrationsReconciled: Promise<void> | null = null;
 
 // Once per isolate, by a system executor that may write org rows. Also refreshes
-// existing declared catalogs once per deployed version. Never fails the boot.
+// existing declared catalogs whose tool list changed. Never fails the boot.
 const reconcileOncePerIsolate = (
   config: CloudflareConfig,
   dbHandle: ExecutorDbHandle,
@@ -61,12 +62,10 @@ const reconcileOncePerIsolate = (
         config.organizationName,
         { orgWrites: "allowed" },
       );
-      yield* reconcileForVersion(
-        executor,
-        config.internalIntegrations,
-        env.CF_VERSION_METADATA?.id,
-        env.BLOBS,
-      ).pipe(Effect.ensuring(executor.close().pipe(Effect.ignore)));
+      yield* reconcileInternalIntegrations(executor, config.internalIntegrations, {
+        listTools: makeInternalListTools(config.internalHosts),
+        store: env.BLOBS,
+      }).pipe(Effect.ensuring(executor.close().pipe(Effect.ignore)));
     }).pipe(
       Effect.provide(dbProviderLayer(Effect.succeed(dbHandle))),
       Effect.provide(makeCloudflarePluginsProvider(config)),

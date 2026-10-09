@@ -37,3 +37,6 @@ export { variable, type ApiKeyAuthTemplate } from "@executor-js/sdk/http-auth";
 export { McpConnectionError, McpToolDiscoveryError, McpOAuthError } from "./errors";
 
 export { deriveMcpNamespace, joinToolPath, extractManifestFromListToolsResult } from "./manifest";
+
+export { discoverToolsFromInput } from "./discover";
+export type { McpToolManifest, McpToolManifestEntry } from "./manifest";
