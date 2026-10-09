@@ -639,6 +639,79 @@ describe("passthrough mode server", () => {
     );
   });
 
+  const invokeWith = async (data: unknown) => {
+    const recording = makeRecordingEngine({ ok: true, data });
+    let result: Awaited<ReturnType<Client["callTool"]>> | undefined;
+    await withClient(
+      { engine: recording.engine, mode: "passthrough", tools: toolPort(CATALOG) },
+      async (client) => {
+        result = await client.callTool({
+          name: "invoke",
+          arguments: { tool: "tools.github.org.main.issues.list", arguments: {} },
+        });
+      },
+    );
+    return result!;
+  };
+
+  it("forwards an upstream image block as a native image block", async () => {
+    const result = await invokeWith({
+      content: [{ type: "image", data: "AQID", mimeType: "image/jpeg" }],
+    });
+    expect(result.content).toEqual([{ type: "image", data: "AQID", mimeType: "image/jpeg" }]);
+    expect(result.isError ?? false).toBe(false);
+  });
+
+  it("keeps mixed text and image blocks in order and keeps bytes out of structuredContent", async () => {
+    const result = await invokeWith({
+      content: [
+        { type: "text", text: "before" },
+        { type: "image", data: "AQID", mimeType: "image/png" },
+        { type: "text", text: "after" },
+        { type: "audio", data: "BAUG", mimeType: "audio/wav" },
+      ],
+      structuredContent: { name: "x.png" },
+    });
+    expect(result.content).toEqual([
+      { type: "text", text: "before" },
+      { type: "image", data: "AQID", mimeType: "image/png" },
+      { type: "text", text: "after" },
+      { type: "audio", data: "BAUG", mimeType: "audio/wav" },
+    ]);
+    expect(result.structuredContent).toEqual({ name: "x.png" });
+    expect(JSON.stringify(result.structuredContent)).not.toContain("AQID");
+  });
+
+  it("omits structuredContent when the upstream result has none", async () => {
+    const result = await invokeWith({
+      content: [{ type: "image", data: "AQID", mimeType: "image/png" }],
+    });
+    expect(result.structuredContent).toBeUndefined();
+  });
+
+  it("still bounds a large text block next to an image", async () => {
+    const result = await invokeWith({
+      content: [
+        { type: "text", text: "x".repeat(30_005) },
+        { type: "image", data: "AQID", mimeType: "image/png" },
+      ],
+    });
+    expect(result.content).toEqual([
+      { type: "text", text: `${"x".repeat(30_000)}\n... [truncated 5 chars]` },
+      { type: "image", data: "AQID", mimeType: "image/png" },
+    ]);
+  });
+
+  it("keeps a text-only upstream result on the standard rendering", async () => {
+    const result = await invokeWith({ content: [{ type: "text", text: "hi" }] });
+    expect((result.content as Array<{ type: string }>).map((b) => b.type)).toEqual(["text"]);
+    expect(result.structuredContent).toEqual({
+      status: "completed",
+      result: { content: [{ type: "text", text: "hi" }] },
+      logs: [],
+    });
+  });
+
   /** An engine whose tool raises the given elicitations in order and records
    *  each answer. `source` is what the executor stamps: `policy` for its own
    *  approval gate, `tool` for anything the tool asked for itself. */
