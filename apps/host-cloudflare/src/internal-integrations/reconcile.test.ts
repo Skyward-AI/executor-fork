@@ -9,7 +9,13 @@ import { makeAnnotationsMcpServer } from "@executor-js/plugin-mcp/testing";
 
 import type { InternalIntegration } from "../config";
 import { makeCloudflarePlugins } from "../plugins";
-import { reconcileInternalIntegrations } from "./reconcile";
+import {
+  needsCatalogRefresh,
+  reconcileInternalIntegrations,
+  recordRefreshedVersion,
+  REFRESHED_VERSION_KEY,
+  type RefreshedVersionStore,
+} from "./reconcile";
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
@@ -64,6 +70,28 @@ const makeExecutor = (binding: ReturnType<typeof makeBinding>) =>
 
 const toolIds = (tools: ReadonlyArray<{ readonly address: unknown }>) =>
   tools.map((tool) => String(tool.address)).sort();
+
+const listCalls = (binding: ReturnType<typeof makeBinding>) =>
+  binding.methods.filter((call) => call === "/mcp/fixture tools/list").length;
+
+const makeStore = (fail = false) => {
+  const data = new Map<string, string>();
+  const store: RefreshedVersionStore = {
+    get: (key) => {
+      // oxlint-disable-next-line executor/no-promise-reject -- boundary: stand-in for a failing R2 binding
+      if (fail) return Promise.reject("r2 down");
+      const value = data.get(key);
+      return Promise.resolve(value === undefined ? null : { text: () => Promise.resolve(value) });
+    },
+    put: (key, value) => {
+      // oxlint-disable-next-line executor/no-promise-reject -- boundary: stand-in for a failing R2 binding
+      if (fail) return Promise.reject("r2 down");
+      data.set(key, value);
+      return Promise.resolve();
+    },
+  };
+  return { data, store };
+};
 
 describe("reconcileInternalIntegrations", () => {
   it.live("creates the integration and its org connection main with the tools loaded", () =>
@@ -167,5 +195,110 @@ describe("reconcileInternalIntegrations", () => {
         expect(binding.methods.some((call) => call === "/mcp/fixture tools/list")).toBe(true);
       }),
     ),
+  );
+
+  it.live("refreshes an existing integration with the declared endpoint when asked", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const binding = makeBinding();
+        const { executor } = yield* makeExecutor(binding);
+        yield* reconcileInternalIntegrations(executor, [FIXTURE]);
+        const before = listCalls(binding);
+
+        const outcome = yield* reconcileInternalIntegrations(executor, [FIXTURE], {
+          refreshExisting: true,
+        });
+
+        expect(outcome).toEqual([["fixture", "refreshed"]]);
+        expect(listCalls(binding)).toBe(before + 1);
+      }),
+    ),
+  );
+
+  it.live("does not refresh an existing integration when not asked", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const binding = makeBinding();
+        const { executor } = yield* makeExecutor(binding);
+        yield* reconcileInternalIntegrations(executor, [FIXTURE]);
+        const before = listCalls(binding);
+
+        yield* reconcileInternalIntegrations(executor, [FIXTURE]);
+
+        expect(listCalls(binding)).toBe(before);
+      }),
+    ),
+  );
+
+  it.live("never refreshes an existing integration with a different endpoint", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const binding = makeBinding();
+        const { executor } = yield* makeExecutor(binding);
+        yield* executor.mcp.addServer({
+          transport: "remote",
+          name: "Admin made",
+          slug: "fixture",
+          endpoint: "https://tools.internal/mcp/other",
+        });
+
+        const outcome = yield* reconcileInternalIntegrations(executor, [FIXTURE], {
+          refreshExisting: true,
+        });
+
+        expect(outcome).toEqual([["fixture", "skipped"]]);
+        expect(binding.methods).toEqual([]);
+      }),
+    ),
+  );
+
+  it.live("a newly created integration is refreshed once, not twice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const binding = makeBinding();
+        const { executor } = yield* makeExecutor(binding);
+
+        const outcome = yield* reconcileInternalIntegrations(executor, [FIXTURE], {
+          refreshExisting: true,
+        });
+
+        expect(outcome).toEqual([["fixture", "created"]]);
+        const plain = makeBinding();
+        const { executor: other } = yield* makeExecutor(plain);
+        yield* reconcileInternalIntegrations(other, [FIXTURE]);
+        expect(listCalls(binding)).toBe(listCalls(plain));
+      }),
+    ),
+  );
+});
+
+describe("refreshed version guard", () => {
+  it.live("refreshes on a new version id and not on the same one", () =>
+    Effect.gen(function* () {
+      const { data, store } = makeStore();
+      expect(yield* needsCatalogRefresh("v1", store)).toBe(true);
+      yield* recordRefreshedVersion("v1", store);
+      expect(data.get(REFRESHED_VERSION_KEY)).toBe("v1");
+      expect(yield* needsCatalogRefresh("v1", store)).toBe(false);
+      expect(yield* needsCatalogRefresh("v2", store)).toBe(true);
+    }),
+  );
+
+  it.live("refreshes and does not fail when R2 errors or the bindings are missing", () =>
+    Effect.gen(function* () {
+      const { store } = makeStore(true);
+      expect(yield* needsCatalogRefresh("v1", store)).toBe(true);
+      yield* recordRefreshedVersion("v1", store);
+      expect(yield* needsCatalogRefresh(undefined, makeStore().store)).toBe(true);
+      expect(yield* needsCatalogRefresh("v1", undefined)).toBe(true);
+    }),
+  );
+
+  it.live("does not record a version when the id is missing", () =>
+    Effect.gen(function* () {
+      const { data, store } = makeStore();
+      yield* recordRefreshedVersion(undefined, store);
+      expect(data.size).toBe(0);
+    }),
   );
 });

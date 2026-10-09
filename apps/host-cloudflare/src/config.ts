@@ -34,6 +34,9 @@ export interface CloudflareEnv {
   readonly DB: D1Database;
   /** R2 bucket binding — holds values too large for a D1 row (~1-2MB cap). */
   readonly BLOBS?: R2Bucket;
+  /** Version metadata binding (wrangler.jsonc `version_metadata`): the id of
+   *  the deployed Worker version. */
+  readonly CF_VERSION_METADATA?: { readonly id: string };
   /** Static assets binding (wrangler.jsonc `assets.binding`). The MCP session
    *  DO fetches the built MCP-Apps shell document through it — a deployed
    *  Worker has no filesystem to read the shell from. */
@@ -145,7 +148,7 @@ export interface CloudflareConfig {
 
 type CloudflareConfigEnv = Omit<
   CloudflareEnv,
-  "DB" | "BLOBS" | "ASSETS" | "MCP_SESSION" | "MCP_EXECUTION_OWNER"
+  "DB" | "BLOBS" | "CF_VERSION_METADATA" | "ASSETS" | "MCP_SESSION" | "MCP_EXECUTION_OWNER"
 >;
 
 type CloudflareAccessEnv = Pick<
