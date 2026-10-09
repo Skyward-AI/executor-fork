@@ -719,6 +719,36 @@ const toMcpResult = (result: FormattedExecuteInput): McpToolResult => {
   };
 };
 
+const MAX_PASSTHROUGH_TEXT_CHARS = 30_000;
+
+const isMediaBlock = (block: ContentBlock): boolean =>
+  block.type === "image" || block.type === "audio";
+
+const boundText = (block: ContentBlock): ContentBlock =>
+  block.type === "text" && block.text.length > MAX_PASSTHROUGH_TEXT_CHARS
+    ? {
+        ...block,
+        text: `${block.text.slice(0, MAX_PASSTHROUGH_TEXT_CHARS)}\n... [truncated ${block.text.length - MAX_PASSTHROUGH_TEXT_CHARS} chars]`,
+      }
+    : block;
+
+/**
+ * An upstream MCP tool result that carries image or audio blocks is forwarded
+ * as native MCP content, so the bytes reach the client as media and never as
+ * JSON text or `structuredContent`. Any other shape returns undefined and
+ * keeps the standard rendering.
+ */
+const upstreamMediaResult = (data: unknown): McpToolResult | undefined => {
+  if (!isRecord(data) || data.isError === true || !Array.isArray(data.content)) return undefined;
+  const blocks: unknown[] = data.content;
+  if (!blocks.every(isMcpContentBlock)) return undefined;
+  if (!blocks.some(isMediaBlock)) return undefined;
+  return {
+    content: blocks.map(boundText),
+    ...(isRecord(data.structuredContent) ? { structuredContent: data.structuredContent } : {}),
+  };
+};
+
 /**
  * A passthrough call's result IS the tool's `ToolResult`. Inside `execute`
  * the model reads `{ ok, data | error }` and branches; here nothing runs
@@ -731,7 +761,7 @@ const toPassthroughResult = (outcome: FormattedExecuteInput): McpToolResult => {
   const value = outcome.result;
   if (outcome.error || !isToolResult(value)) return toMcpResult(outcome);
   if (value.ok) {
-    return toMcpResult({ ...outcome, result: value.data });
+    return upstreamMediaResult(value.data) ?? toMcpResult({ ...outcome, result: value.data });
   }
   const message = `${value.error.code}: ${value.error.message}`;
   return {
