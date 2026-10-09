@@ -502,6 +502,36 @@ describe("internal host routing", () => {
     expect(external.urls).toEqual([]);
   });
 
+  it("tells the binding who the caller is, replacing any value the request carried", async () => {
+    const seen: Array<string | null> = [];
+    const binding = {
+      fetch: async (request: Request) => {
+        seen.push(request.headers.get("x-executor-account-id"));
+        return new Response("ok");
+      },
+    };
+    const external = externalStub();
+    const withCaller = makeHostedFetch({
+      fetch: external.fetch,
+      resolveHostname: publicResolver,
+      internalHosts: { "tools.internal": binding },
+      internalCaller: "ana@example.com",
+    });
+    const withoutCaller = makeHostedFetch({
+      fetch: external.fetch,
+      resolveHostname: publicResolver,
+      internalHosts: { "tools.internal": binding },
+    });
+    const spoofed = { headers: { "x-executor-account-id": "root@example.com" } };
+
+    await withCaller("https://tools.internal/mcp/websearch", spoofed);
+    await withoutCaller("https://tools.internal/mcp/websearch", spoofed);
+    await withCaller("https://api.example/openapi.json", spoofed);
+
+    expect(seen).toEqual(["ana@example.com", null]);
+    expect(external.urls).toEqual(["https://api.example/openapi.json"]);
+  });
+
   it("hands the binding a manual-redirect request and returns its redirect untouched", async () => {
     const seen: string[] = [];
     const binding = {
