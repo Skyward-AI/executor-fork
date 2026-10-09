@@ -24,6 +24,8 @@ beforeAll(() => loadMcpClientSdk());
 import { McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
 import { invokeMcpTool, makeActiveWorkDeadline, MCP_ACTIVE_WORK_TIMEOUT_MS } from "./invoke";
 
+const ONE_HOUR_MS = 3_600_000;
+
 const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accept" }));
 
 const rejectingConnector = (cause: unknown): McpConnector =>
@@ -167,6 +169,18 @@ const invocationRejectionCases = [
 describe("invokeMcpTool", () => {
   afterEach(() => vi.useRealTimers());
 
+  it("defaults the active-work deadline to one hour", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    expect(MCP_ACTIVE_WORK_TIMEOUT_MS).toBe(3_600_000);
+    const deadline = makeActiveWorkDeadline();
+
+    vi.advanceTimersByTime(3_599_999);
+    expect(deadline.signal.aborted).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(deadline.signal.aborted).toBe(true);
+    deadline.dispose();
+  });
+
   it("pauses the active-work deadline across overlapping elicitations", () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const deadline = makeActiveWorkDeadline(100);
@@ -249,14 +263,14 @@ describe("invokeMcpTool", () => {
     );
 
     await elicitationStarted;
-    expect(callOptions?.timeout).toBeGreaterThan(MCP_ACTIVE_WORK_TIMEOUT_MS);
-    vi.advanceTimersByTime(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(callOptions?.timeout).toBeGreaterThan(ONE_HOUR_MS);
+    vi.advanceTimersByTime(ONE_HOUR_MS);
     expect(callOptions?.signal.aborted).toBe(false);
 
     finishElicitation!();
     await Promise.resolve();
     await Promise.resolve();
-    vi.advanceTimersByTime(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    vi.advanceTimersByTime(ONE_HOUR_MS);
     expect(callOptions?.signal.aborted).toBe(true);
     expect(await invocation).toBe("failed");
   });

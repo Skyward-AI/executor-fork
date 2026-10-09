@@ -50,7 +50,7 @@ import {
  * the normal deadline and is paused while one or more elicitation handlers are
  * waiting for input.
  */
-export const MCP_ACTIVE_WORK_TIMEOUT_MS = 60_000;
+export const MCP_ACTIVE_WORK_TIMEOUT_MS = 3_600_000;
 const MCP_SDK_TIMEOUT_BACKSTOP_MS = 2_147_483_647;
 
 export type ActiveWorkDeadline = {
