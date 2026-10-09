@@ -53,6 +53,15 @@ followed. A host naming a missing binding fails config load: the Worker answers
 503 with a message naming the host and the binding. Both the Worker and
 `McpSessionDO` read the same config, so both paths route.
 
+`INTERNAL_MCP_REGISTRIES` declares what each internal host serves, as a JSON
+array of `{ "host", "servers": [{ "slug", "name", "description", "route" }] }`
+with `route` equal to `/mcp/<slug>` and every `host` present in
+`INTERNAL_MCP_HOSTS` (otherwise config load fails). Once per isolate, each
+declared server whose slug does not exist yet is created as an org-level MCP
+integration at `https://<host><route>` (no auth) with an org connection named
+`main`, and its tools are loaded. An existing integration with the same slug is
+never changed, and nothing is ever deleted.
+
 **Trust boundary.** The boundary is the Cloudflare account, not Executor: any
 Worker in the same account could bind the target Worker, so the bound Worker
 must be private (no public route, `workers_dev` and preview URLs off) and
