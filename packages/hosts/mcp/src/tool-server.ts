@@ -47,6 +47,7 @@ import type {
   SaveArtifactInput,
   ToolFileValue,
   Executor,
+  Tool,
   ToolSchemaView,
 } from "@executor-js/sdk";
 import type * as Tracer from "effect/Tracer";
@@ -1297,6 +1298,12 @@ const parseJsonContent = (raw: string): Record<string, unknown> | undefined => {
 // Passthrough surface
 // ---------------------------------------------------------------------------
 
+/** The sandbox path discovery reports for a tool: its address without the proxy root. */
+const toolPath = (address: ToolAddress): string => {
+  const value = String(address);
+  return value.startsWith("tools.") ? value.slice("tools.".length) : value;
+};
+
 /** Serialize one existing schema view as a self-contained MCP input schema. */
 const passthroughInputSchema = (view: ToolSchemaView): unknown =>
   reattachDefs(
@@ -1443,6 +1450,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
         ({ query, integration, owner, connection, limit, offset }, extra) =>
           boundary(
             Effect.gen(function* () {
+              const listed = new Map<string, Tool>();
               const discovery = {
                 tools: {
                   list: (filter?: Parameters<McpToolsPort["list"]>[0]) =>
@@ -1457,7 +1465,13 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                           ? {}
                           : { connection: ConnectionName.make(connection) }),
                       })
-                      .pipe(Effect.map((items) => items.filter((tool) => tool.static !== true))),
+                      .pipe(
+                        Effect.tap((items) =>
+                          Effect.sync(() => {
+                            for (const tool of items) listed.set(toolPath(tool.address), tool);
+                          }),
+                        ),
+                      ),
                 },
               };
               // Through the configured provider, not the raw ranker: passthrough
@@ -1473,18 +1487,17 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                 page.items,
                 (match) =>
                   Effect.gen(function* () {
-                    const address = ToolAddress.make(`tools.${match.path}`);
-                    const identity = parseToolAddress(String(address));
-                    if (!identity) return null;
-                    const schema = yield* tools.schema(address);
+                    const tool = listed.get(match.path);
+                    if (!tool) return null;
+                    const schema = yield* tools.schema(tool.address);
                     // Visibility can change between listing and schema lookup.
                     if (!schema) return null;
                     return {
-                      id: String(address),
+                      id: String(tool.address),
                       name: match.name,
-                      integration: identity.integration,
-                      owner: identity.owner,
-                      connection: identity.connection,
+                      integration: tool.integration,
+                      owner: tool.owner,
+                      connection: tool.connection,
                       description: match.description,
                       inputSchema: passthroughInputSchema(schema),
                       ...(schema.annotations ? { annotations: schema.annotations } : {}),
@@ -1517,7 +1530,6 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
         ({ tool: id, arguments: args }, extra) =>
           boundary(
             Effect.gen(function* () {
-              const identity = parseToolAddress(id);
               const unavailable = {
                 isError: true,
                 content: [
@@ -1527,18 +1539,25 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                   },
                 ],
               };
-              if (!identity) return unavailable;
               const address = ToolAddress.make(id);
-              // Use the existing visibility filter and exclude static configuration tools.
-              const visible = yield* tools.list({
-                integration: identity.integration,
-                owner: identity.owner,
-                connection: identity.connection,
-                query: String(identity.tool),
-                includeAnnotations: false,
-              });
-              if (!visible.some((tool) => tool.static !== true && tool.address === address))
-                return unavailable;
+              const identity = parseToolAddress(id);
+              // Executor's own configuration tools are addressed by their fqid, so
+              // they are found by integration rather than the five-segment address.
+              const visible = yield* tools.list(
+                identity
+                  ? {
+                      integration: identity.integration,
+                      owner: identity.owner,
+                      connection: identity.connection,
+                      query: String(identity.tool),
+                      includeAnnotations: false,
+                    }
+                  : {
+                      integration: IntegrationSlug.make(id.split(".")[0] ?? id),
+                      includeAnnotations: false,
+                    },
+              );
+              if (!visible.some((tool) => tool.address === address)) return unavailable;
               const schema = yield* tools.schema(address);
               if (!schema) return unavailable;
               // The SDK validator checks this dynamic JSON schema at the MCP boundary.
