@@ -1,10 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
 
 import { orgWriteAccessForPrincipal, principalOwns } from "@executor-js/host-mcp";
 import type { Principal } from "@executor-js/host-mcp";
 
 import type { CloudflareConfig } from "../config";
-import { applyDelegatedSubject, principalFromAccessClaims } from "./cloudflare-access";
+import {
+  applyDelegatedSubject,
+  internalPrincipal,
+  makeAccessVerifier,
+  principalFromAccessClaims,
+} from "./cloudflare-access";
 
 const config: CloudflareConfig = {
   accessTeamDomain: "team.cloudflareaccess.com",
@@ -155,4 +161,73 @@ describe("applyDelegatedSubject", () => {
     });
     expect(p).toBeNull();
   });
+});
+
+describe("internalPrincipal", () => {
+  const internal: CloudflareConfig = { ...delegating, trustedInternal: true };
+
+  it("acts as the configured service token when no subject is named", () => {
+    const p = internalPrincipal(internal, { subject: null, email: null });
+    expect(p?.accountId).toBe("agent-token.access");
+    expect(p?.email).toBe("");
+    expect(p?.roles).toEqual(["member"]);
+  });
+
+  it("acts as the named person, reaching the rows their browser session reaches", () => {
+    const browser = principalFromAccessClaims(
+      { sub: "alice-sub", email: "alice@example.com" },
+      internal,
+    );
+    const p = internalPrincipal(internal, {
+      subject: "Alice@Example.com",
+      email: "Alice@Example.com",
+    });
+    expect(p?.accountId).toBe("alice@example.com");
+    expect(principalOwns(browser, p as Principal)).toBe(true);
+  });
+
+  it("mirrors the named person's admin standing", () => {
+    const p = internalPrincipal(internal, {
+      subject: "admin@example.com",
+      email: "admin@example.com",
+    });
+    expect(p?.orgRole).toBe("admin");
+  });
+
+  it("REJECTS an email with no subject", () => {
+    expect(internalPrincipal(internal, { subject: "", email: "alice@example.com" })).toBeNull();
+  });
+
+  it("has a stable identity when no delegator is configured", () => {
+    const p = internalPrincipal(
+      { ...config, trustedInternal: true },
+      { subject: null, email: null },
+    );
+    expect(p?.accountId).toBe("internal-service-binding");
+  });
+});
+
+describe("makeAccessVerifier doors", () => {
+  const delegatedRequest = () =>
+    new Request("https://executor.test/mcp", {
+      headers: {
+        "X-Executor-Subject": "alice@example.com",
+        "X-Executor-Subject-Email": "alice@example.com",
+      },
+    });
+
+  it.effect("the public door rejects a delegation header with no Access assertion", () =>
+    Effect.gen(function* () {
+      const { verify } = makeAccessVerifier(delegating);
+      expect(yield* verify(delegatedRequest())).toBeNull();
+    }),
+  );
+
+  it.effect("the internal door acts as the named person with no Access assertion", () =>
+    Effect.gen(function* () {
+      const { verify } = makeAccessVerifier({ ...delegating, trustedInternal: true });
+      const p = yield* verify(delegatedRequest());
+      expect(p?.accountId).toBe("alice@example.com");
+    }),
+  );
 });

@@ -106,6 +106,12 @@ export interface CloudflareConfig {
    *  static URL — the per-request origin is used instead (see RequestWebOrigin). */
   readonly webBaseUrl?: string;
   readonly enableDevAuth: boolean;
+  /**
+   * True ONLY for the config the `ExecutorInternal` service-binding entrypoint
+   * builds (`loadConfig(env, { internal: true })`). Never derived from `env` or a
+   * request, so the public `fetch` can never be in this mode.
+   */
+  readonly trustedInternal?: boolean;
   /** Present only when the gateway is fully configured; absent disables Jev
    *  rather than failing a search, so a missing var degrades ranking instead of
    *  breaking tool discovery. */
@@ -124,9 +130,7 @@ type CloudflareAccessEnv = Pick<
 
 // Both ids are required: a gateway URL missing either one resolves to a 404 that
 // would look like "Jev found nothing" rather than "Jev was never configured".
-const resolveJevGateway = (
-  env: CloudflareConfigEnv,
-): CloudflareConfig["jevGateway"] => {
+const resolveJevGateway = (env: CloudflareConfigEnv): CloudflareConfig["jevGateway"] => {
   const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim() ?? "";
   const gatewayId = env.AI_GATEWAY_ID?.trim() ?? "";
   if (accountId.length === 0 || gatewayId.length === 0) {
@@ -183,7 +187,16 @@ const resolveOrgSlug = (value: string | undefined): string => {
   return value;
 };
 
-export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
+export interface LoadConfigOptions {
+  /** Build the trusted config for the service-binding entrypoint (see
+   *  {@link CloudflareConfig.trustedInternal}). */
+  readonly internal?: boolean;
+}
+
+export const loadConfig = (
+  env: CloudflareConfigEnv,
+  options: LoadConfigOptions = {},
+): CloudflareConfig => {
   const secretKey = env.EXECUTOR_SECRET_KEY?.trim();
   if (!secretKey || secretKey.length < 16) {
     // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: the Worker must not boot without the at-rest secret key
@@ -229,6 +242,7 @@ export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
     // mirroring self-host (gated on enableDevAuth = local `wrangler dev`).
     webBaseUrl,
     enableDevAuth,
+    trustedInternal: options.internal === true,
     jevGateway: resolveJevGateway(env),
   };
 };

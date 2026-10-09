@@ -98,3 +98,23 @@ worker routing, which is a materially larger delta to carry across upstream
 releases than one pure function. Worth revisiting if this host ever grows a
 first-class non-Access auth seam, or if upstream adds MCP OAuth over Access (see
 the note at the end of `src/mcp/auth.ts`, which anticipates exactly that).
+
+## The service-binding door
+
+A worker in the same Cloudflare account can skip Access entirely by binding the
+`ExecutorInternal` entrypoint:
+
+```jsonc
+"services": [
+  { "binding": "EXECUTOR", "service": "executor-cloudflare", "entrypoint": "ExecutorInternal" }
+]
+```
+
+The binding is the trust boundary: only a worker that declares it can reach this
+door, and it has no public route. A request through it sends no Access
+credentials. Without delegation headers it acts as the service itself, keyed on
+`ACCESS_DELEGATION_COMMON_NAME` so it reaches the same rows that service token
+reaches through Access. With `X-Executor-Subject` (and `X-Executor-Subject-Email`)
+it acts for that person, as a trusted delegator would. The trusted mode lives on a
+config only the entrypoint builds (`loadConfig(env, { internal: true })`), so no
+header or variable can switch the public `fetch` into it.
