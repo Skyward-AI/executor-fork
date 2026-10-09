@@ -119,3 +119,40 @@ describe("jevGateway", () => {
     expect(config.jevGateway?.authToken).toBeUndefined();
   });
 });
+
+describe("INTERNAL_MCP_HOSTS", () => {
+  const TOOLS = { fetch: async () => new Response("ok") };
+  const devEnv = (overrides: Record<string, unknown>): ConfigEnv =>
+    Object.assign(makeEnv({ ENABLE_DEV_AUTH: "true" }), overrides);
+
+  it("resolves a host to the service binding it names", () => {
+    const config = loadConfig(devEnv({ INTERNAL_MCP_HOSTS: "Tools.Internal=TOOLS", TOOLS }));
+
+    expect(Object.keys(config.internalHosts)).toEqual(["tools.internal"]);
+    expect(config.internalHosts["tools.internal"]).toBe(TOOLS);
+  });
+
+  it("accepts a trailing dot on the host and stores it normalised", () => {
+    const config = loadConfig(devEnv({ INTERNAL_MCP_HOSTS: "Tools.Internal.=TOOLS", TOOLS }));
+
+    expect(Object.keys(config.internalHosts)).toEqual(["tools.internal"]);
+  });
+
+  it("has no internal hosts when the variable is unset", () => {
+    expect(loadConfig(devEnv({ TOOLS })).internalHosts).toEqual({});
+  });
+
+  it("fails loudly when a host names a binding that is absent", () => {
+    expect(() => loadConfig(devEnv({ INTERNAL_MCP_HOSTS: "tools.internal=TOOLS" }))).toThrowError(
+      "INTERNAL_MCP_HOSTS maps tools.internal to TOOLS, but no service binding named TOOLS is configured",
+    );
+  });
+
+  it("refuses a host that does not end in .internal", () => {
+    expect(() =>
+      loadConfig(devEnv({ INTERNAL_MCP_HOSTS: "api.example.com=TOOLS", TOOLS })),
+    ).toThrowError(
+      'INTERNAL_MCP_HOSTS entry "api.example.com=TOOLS" must look like "tools.internal=TOOLS" (a host ending in .internal, then a service binding name)',
+    );
+  });
+});

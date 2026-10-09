@@ -54,6 +54,7 @@ export const makeCloudflarePluginsProvider = (
 export const makeCloudflareHostConfig = (config: CloudflareConfig): Layer.Layer<HostConfig> =>
   Layer.succeed(HostConfig)({
     allowLocalNetwork: config.allowLocalNetwork,
+    internalHosts: config.internalHosts,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
     // Each MCP session's executor lives in a Durable Object with a small memory
