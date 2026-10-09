@@ -37,6 +37,9 @@ export interface InternalIntegrationExecutor {
       readonly values: Record<string, never>;
     }) => Effect.Effect<unknown, unknown>;
     readonly refresh: (ref: ConnectionRef) => Effect.Effect<unknown, unknown>;
+    readonly list: (filter: {
+      readonly integration: IntegrationSlug;
+    }) => Effect.Effect<ReadonlyArray<unknown>, unknown>;
   };
 }
 
@@ -45,6 +48,30 @@ const storedEndpoint = (integration: unknown): string | undefined => {
   const url: unknown = Reflect.get(integration, "displayUrl");
   return typeof url === "string" ? url : undefined;
 };
+
+class ToolSyncFailed {
+  readonly _tag = "ToolSyncFailed";
+}
+
+// A refresh that cannot reach the server succeeds and records the failure on the connection.
+const refreshMain = (executor: InternalIntegrationExecutor, slug: IntegrationSlug) =>
+  Effect.gen(function* () {
+    const name = ConnectionName.make(INTERNAL_CONNECTION_NAME);
+    yield* executor.connections.refresh({ owner: "org", integration: slug, name });
+    const connections = yield* executor.connections.list({ integration: slug });
+    const main = connections.find(
+      (connection) =>
+        typeof connection === "object" &&
+        connection !== null &&
+        Reflect.get(connection, "owner") === "org" &&
+        String(Reflect.get(connection, "name")) === INTERNAL_CONNECTION_NAME,
+    );
+    const health: unknown =
+      main === undefined ? undefined : Reflect.get(main as object, "lastHealth");
+    const reason: unknown =
+      typeof health === "object" && health !== null ? Reflect.get(health, "reason") : undefined;
+    if (reason === "tool_sync_failed") return yield* Effect.fail(new ToolSyncFailed());
+  });
 
 const reconcileOne = (
   executor: InternalIntegrationExecutor,
@@ -56,11 +83,7 @@ const reconcileOne = (
     const existing = yield* executor.integrations.get(slug);
     if (existing !== null && existing !== undefined) {
       if (refreshExisting && storedEndpoint(existing) === entry.endpoint) {
-        yield* executor.connections.refresh({
-          owner: "org",
-          integration: slug,
-          name: ConnectionName.make(INTERNAL_CONNECTION_NAME),
-        });
+        yield* refreshMain(executor, slug);
         yield* Effect.logInfo(`internal integration ${entry.slug} catalog refreshed`);
         return "refreshed" as const;
       }
@@ -84,7 +107,7 @@ const reconcileOne = (
       template: AuthTemplateSlug.make("none"),
       values: {},
     });
-    yield* executor.connections.refresh({ owner: "org", integration: slug, name });
+    yield* refreshMain(executor, slug);
     return "created" as const;
   }).pipe(
     Effect.catch((cause) =>
@@ -149,3 +172,23 @@ export const recordRefreshedVersion = (
     Effect.catch(warnStore("refreshed version could not be recorded")),
   );
 };
+
+/**
+ * Reconciles, refreshing existing catalogs when this version has not refreshed
+ * yet. The version is recorded only when no entry failed, so a binding that was
+ * down at boot is retried on the next boot.
+ */
+export const reconcileForVersion = (
+  executor: InternalIntegrationExecutor,
+  entries: readonly InternalIntegration[],
+  versionId: string | undefined,
+  store: RefreshedVersionStore | undefined,
+): Effect.Effect<ReadonlyArray<readonly [string, ReconcileOutcome]>> =>
+  Effect.gen(function* () {
+    const refreshExisting = yield* needsCatalogRefresh(versionId, store);
+    const outcomes = yield* reconcileInternalIntegrations(executor, entries, { refreshExisting });
+    if (refreshExisting && outcomes.every(([, outcome]) => outcome !== "failed")) {
+      yield* recordRefreshedVersion(versionId, store);
+    }
+    return outcomes;
+  });

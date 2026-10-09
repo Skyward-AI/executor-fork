@@ -12,6 +12,7 @@ import { makeCloudflarePlugins } from "../plugins";
 import {
   needsCatalogRefresh,
   reconcileInternalIntegrations,
+  reconcileForVersion,
   recordRefreshedVersion,
   REFRESHED_VERSION_KEY,
   type RefreshedVersionStore,
@@ -45,7 +46,7 @@ const makeBinding = () => {
   };
 };
 
-const makeExecutor = (binding: ReturnType<typeof makeBinding>) =>
+const makeExecutor = (binding: { readonly fetch: (request: Request) => Promise<Response> }) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
       const internalHosts = { "tools.internal": binding };
@@ -292,6 +293,34 @@ describe("refreshed version guard", () => {
       expect(yield* needsCatalogRefresh(undefined, makeStore().store)).toBe(true);
       expect(yield* needsCatalogRefresh("v1", undefined)).toBe(true);
     }),
+  );
+
+  it.live("does not record the version when a refresh failed, and retries on the next run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const binding = makeBinding();
+        let healthy = true;
+        const toggled = {
+          fetch: (request: Request) =>
+            healthy
+              ? binding.fetch(request)
+              : Promise.resolve(new Response("down", { status: 503 })),
+        };
+        const { executor } = yield* makeExecutor(toggled);
+        yield* reconcileInternalIntegrations(executor, [FIXTURE]);
+        const { data, store } = makeStore();
+        healthy = false;
+
+        const first = yield* reconcileForVersion(executor, [FIXTURE], "v1", store);
+
+        expect(first).toEqual([["fixture", "failed"]]);
+        expect(data.has(REFRESHED_VERSION_KEY)).toBe(false);
+        healthy = true;
+        const second = yield* reconcileForVersion(executor, [FIXTURE], "v1", store);
+        expect(second).toEqual([["fixture", "refreshed"]]);
+        expect(data.get(REFRESHED_VERSION_KEY)).toBe("v1");
+      }),
+    ),
   );
 
   it.live("does not record a version when the id is missing", () =>

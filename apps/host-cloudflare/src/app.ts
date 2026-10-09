@@ -10,11 +10,7 @@ import {
 } from "@executor-js/api/server";
 
 import { internalPrincipal } from "./auth/cloudflare-access";
-import {
-  needsCatalogRefresh,
-  reconcileInternalIntegrations,
-  recordRefreshedVersion,
-} from "./internal-integrations/reconcile";
+import { reconcileForVersion } from "./internal-integrations/reconcile";
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
 import { makeCloudflarePlugins, type CloudflarePlugins } from "./plugins";
 import { createD1ExecutorDb } from "./db/d1";
@@ -65,12 +61,12 @@ const reconcileOncePerIsolate = (
         config.organizationName,
         { orgWrites: "allowed" },
       );
-      const versionId = env.CF_VERSION_METADATA?.id;
-      const refreshExisting = yield* needsCatalogRefresh(versionId, env.BLOBS);
-      yield* reconcileInternalIntegrations(executor, config.internalIntegrations, {
-        refreshExisting,
-      }).pipe(Effect.ensuring(executor.close().pipe(Effect.ignore)));
-      if (refreshExisting) yield* recordRefreshedVersion(versionId, env.BLOBS);
+      yield* reconcileForVersion(
+        executor,
+        config.internalIntegrations,
+        env.CF_VERSION_METADATA?.id,
+        env.BLOBS,
+      ).pipe(Effect.ensuring(executor.close().pipe(Effect.ignore)));
     }).pipe(
       Effect.provide(dbProviderLayer(Effect.succeed(dbHandle))),
       Effect.provide(makeCloudflarePluginsProvider(config)),
