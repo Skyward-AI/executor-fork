@@ -56,6 +56,12 @@ describe("loadConfig", () => {
       enableDevAuth: false,
     });
   });
+
+  it("builds the trusted internal config only when the entrypoint asks for it", () => {
+    const access = { ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com", ACCESS_AUD: "aud-tag" };
+    expect(loadConfig(makeEnv(access)).trustedInternal).toBe(false);
+    expect(loadConfig(makeEnv(access), { internal: true }).trustedInternal).toBe(true);
+  });
 });
 
 describe("Cloudflare deployment configuration", () => {

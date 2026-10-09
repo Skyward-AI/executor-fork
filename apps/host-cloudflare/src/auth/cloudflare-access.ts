@@ -129,6 +129,15 @@ export const applyDelegatedSubject = (
   if (!mayDelegate) return null;
   if (subject.length === 0) return null;
 
+  return bindSubject(principal, config, subject, email);
+};
+
+const bindSubject = (
+  principal: Principal,
+  config: CloudflareConfig,
+  subject: string,
+  email: string,
+): Principal => {
   const isAdmin = email.length > 0 && config.adminEmails.includes(email.toLowerCase());
   return {
     ...principal,
@@ -142,6 +151,35 @@ export const applyDelegatedSubject = (
     orgRoleModel: "organization",
     orgRole: isAdmin ? "admin" : "member",
   };
+};
+
+/** Fallback identity of the service-binding caller when no delegator is configured. */
+export const INTERNAL_BINDING_COMMON_NAME = "internal-service-binding";
+
+/**
+ * The principal a request through the `ExecutorInternal` service-binding door acts
+ * as. The binding is the trust boundary: only a worker in the same account that
+ * declares it can call this door, and Cloudflare Access never sees the request.
+ *
+ * Without delegation headers the caller is the service itself, keyed on the
+ * configured delegator's `common_name` so it reaches exactly the rows that same
+ * service token reaches through Access. With them, it acts for the named person,
+ * as a trusted delegator would. A subject-less delegation is rejected, as on the
+ * public door.
+ */
+export const internalPrincipal = (
+  config: CloudflareConfig,
+  delegated: DelegatedIdentity,
+): Principal | null => {
+  const service = principalFromAccessClaims(
+    { common_name: config.accessDelegationCommonName ?? INTERNAL_BINDING_COMMON_NAME },
+    config,
+  );
+  const subject = delegated.subject?.trim() ?? "";
+  const email = delegated.email?.trim() ?? "";
+  if (subject.length === 0 && email.length === 0) return service;
+  if (subject.length === 0) return null;
+  return bindSubject(service, config, subject, email);
 };
 
 /**
@@ -178,6 +216,12 @@ export const makeAccessVerifier = (config: CloudflareConfig) => {
 
   const verify = (request: Request): Effect.Effect<Principal | null> =>
     Effect.gen(function* () {
+      // Only the `ExecutorInternal` entrypoint builds a config with this set. It
+      // is never read from `env` or a request, so nothing presented to the public
+      // `fetch` can reach this branch.
+      if (config.trustedInternal === true) {
+        return internalPrincipal(config, readDelegatedIdentity(request));
+      }
       if (config.enableDevAuth) return devPrincipal;
       if (!jwks) return null;
       const token = request.headers.get("Cf-Access-Jwt-Assertion");
