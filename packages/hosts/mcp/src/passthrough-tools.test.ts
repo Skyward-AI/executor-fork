@@ -383,13 +383,6 @@ describe("passthrough mode server", () => {
         connection: "main",
         name: "issues.first",
       }),
-      projection({
-        integration: "github",
-        owner: "org",
-        connection: "main",
-        name: "issues.static",
-        static: true,
-      }),
     ];
     await withClient(
       { engine, mode: "passthrough", tools: toolPort(catalog, schemaReads) },
@@ -507,24 +500,71 @@ describe("passthrough mode server", () => {
     );
   });
 
-  it("uses current schemas and excludes static configuration tools", async () => {
+  it("searches and invokes Executor's own configuration tools by their fqid", async () => {
+    const recording = makeRecordingEngine();
+    const addServer: Tool = {
+      address: ToolAddress.make("executor.mcp.addServer"),
+      integration: IntegrationSlug.make("executor"),
+      owner: "org",
+      connection: ConnectionName.make("coreTools"),
+      name: ToolName.make("mcp.addServer"),
+      pluginId: "mcp",
+      description: "Register an MCP server in the catalog as an integration.",
+      inputSchema: {
+        type: "object",
+        properties: { endpoint: { type: "string" } },
+        required: ["endpoint"],
+      },
+      annotations: { requiresApproval: true },
+      static: true,
+    };
+    await withClient(
+      { engine: recording.engine, mode: "passthrough", tools: toolPort([addServer]) },
+      async (client) => {
+        const found = await client.callTool({
+          name: "search",
+          arguments: { query: "add mcp server" },
+        });
+        expect(found.structuredContent).toMatchObject({
+          items: [
+            {
+              id: "executor.mcp.addServer",
+              integration: "executor",
+              owner: "org",
+              connection: "coreTools",
+              inputSchema: { required: ["endpoint"] },
+            },
+          ],
+        });
+        await client.callTool({
+          name: "invoke",
+          arguments: {
+            tool: "executor.mcp.addServer",
+            arguments: { endpoint: "https://blog.mcp.cloudflare.com/mcp" },
+          },
+        });
+        const unknown = await client.callTool({
+          name: "invoke",
+          arguments: { tool: "executor.mcp.removeEverything", arguments: {} },
+        });
+        expect(unknown.isError).toBe(true);
+        expect(recording.executed).toEqual([
+          'return await tools["executor.mcp.addServer"]({"endpoint":"https://blog.mcp.cloudflare.com/mcp"});',
+        ]);
+      },
+    );
+  });
+
+  it("uses current schemas", async () => {
     const recording = makeRecordingEngine();
     const dynamic = projection({
       integration: "notes",
       name: "create",
       inputSchema: { type: "object" },
     });
-    const catalog = [dynamic, projection({ integration: "settings", name: "erase", static: true })];
     let current: ToolSchemaView = { address: dynamic.address, inputSchema: dynamic.inputSchema };
-    const tools: McpToolsPort = { ...toolPort(catalog), schema: () => Effect.succeed(current) };
+    const tools: McpToolsPort = { ...toolPort([dynamic]), schema: () => Effect.succeed(current) };
     await withClient({ engine: recording.engine, mode: "passthrough", tools }, async (client) => {
-      const hidden = await client.callTool({ name: "search", arguments: { query: "settings" } });
-      expect(decodeSearchItems(hidden.structuredContent).items).toEqual([]);
-      const staticCall = await client.callTool({
-        name: "invoke",
-        arguments: { tool: "tools.settings.org.main.erase", arguments: {} },
-      });
-      expect(staticCall.isError).toBe(true);
       await client.callTool({ name: "search", arguments: { query: "notes" } });
       current = {
         address: dynamic.address,
