@@ -2,6 +2,12 @@ import type { D1Database, DurableObjectNamespace, R2Bucket } from "@cloudflare/w
 
 import type { JevGatewayConfig } from "@executor-js/execution";
 import { isValidOrgSlug } from "@executor-js/api";
+import {
+  isInternalHostname,
+  normalizeHostname,
+  type HostedInternalFetcher,
+  type HostedInternalHosts,
+} from "@executor-js/sdk/host-internal";
 import { missingPublicOriginWarning, resolvePublicOrigin } from "@executor-js/sdk/public-origin";
 
 let warnedNoCloudflareOrigin = false;
@@ -62,6 +68,12 @@ export interface CloudflareEnv {
   readonly EXECUTOR_SECRET_KEY?: string;
   readonly ALLOW_LOCAL_NETWORK?: string;
   /**
+   * Private MCP hosts served by service bindings: comma-separated `host=BINDING`
+   * pairs, e.g. `tools.internal=TOOLS`. Each BINDING names a service binding on
+   * this Worker (wrangler `services`).
+   */
+  readonly INTERNAL_MCP_HOSTS?: string;
+  /**
    * Cloudflare AI Gateway, for the Jev classifier (`custom-typesafe`). Every
    * model call goes through a gateway rather than a provider directly, so the
    * key stays in the gateway's BYOK store and never in a worker var — which is
@@ -102,6 +114,8 @@ export interface CloudflareConfig {
   readonly organizationSlug: string;
   readonly secretKey: string;
   readonly allowLocalNetwork: boolean;
+  /** Internal MCP hosts mapped to their service bindings (see `INTERNAL_MCP_HOSTS`). */
+  readonly internalHosts: HostedInternalHosts;
   /** Explicit web base URL (`VITE_PUBLIC_SITE_URL`). Unset on a Worker with no
    *  static URL — the per-request origin is used instead (see RequestWebOrigin). */
   readonly webBaseUrl?: string;
@@ -187,6 +201,40 @@ const resolveOrgSlug = (value: string | undefined): string => {
   return value;
 };
 
+const isInternalFetcher = (value: unknown): value is HostedInternalFetcher =>
+  typeof value === "object" &&
+  value !== null &&
+  "fetch" in value &&
+  typeof value.fetch === "function";
+
+// A host naming an absent binding must stop the Worker (503 at the door) rather
+// than leave an integration that silently cannot be reached.
+const resolveInternalHosts = (env: CloudflareConfigEnv): HostedInternalHosts => {
+  const hosts: Record<string, HostedInternalFetcher> = {};
+  for (const pair of (env.INTERNAL_MCP_HOSTS ?? "").split(",")) {
+    const entry = pair.trim();
+    if (entry.length === 0) continue;
+    const [rawHost, rawBinding, ...rest] = entry.split("=").map((part) => part.trim());
+    const host = normalizeHostname(rawHost ?? "");
+    const binding = rawBinding ?? "";
+    if (rest.length > 0 || !isInternalHostname(host) || binding.length === 0) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: a malformed internal host mapping must fail the boot, not route silently
+      throw new Error(
+        `INTERNAL_MCP_HOSTS entry ${JSON.stringify(entry)} must look like "tools.internal=TOOLS" (a host ending in .internal, then a service binding name)`,
+      );
+    }
+    const fetcher: unknown = Reflect.get(env, binding);
+    if (!isInternalFetcher(fetcher)) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: an internal host whose service binding is absent must fail loudly instead of leaving an unreachable integration
+      throw new Error(
+        `INTERNAL_MCP_HOSTS maps ${host} to ${binding}, but no service binding named ${binding} is configured`,
+      );
+    }
+    hosts[host] = fetcher;
+  }
+  return hosts;
+};
+
 export interface LoadConfigOptions {
   /** Build the trusted config for the service-binding entrypoint (see
    *  {@link CloudflareConfig.trustedInternal}). */
@@ -234,6 +282,7 @@ export const loadConfig = (
     organizationSlug: resolveOrgSlug(env.SELF_HOSTED_ORG_SLUG),
     secretKey,
     allowLocalNetwork: env.ALLOW_LOCAL_NETWORK === "true",
+    internalHosts: resolveInternalHosts(env),
     // Pinned origin via the shared resolver. A Worker receives no PaaS platform
     // vars (env: {} — there is nothing to detect), so only the explicit
     // VITE_PUBLIC_SITE_URL applies; when it's unset we leave webBaseUrl undefined

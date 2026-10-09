@@ -29,6 +29,39 @@ org. Members and credentials are managed in Cloudflare Access, not in-app.
 everything else is the SPA. Every API/MCP route is gated by the Access JWT (401
 without). The SPA's auth context reads `/api/account/me`.
 
+### Internal tools over service bindings
+
+The surfaces above are inbound. Outbound, a private MCP server in another Worker
+is reached over a service binding, never the internet. `INTERNAL_MCP_HOSTS` is a
+comma-separated list of `host=BINDING` pairs (host ends in `.internal`), and each
+BINDING is a service binding on this Worker:
+
+```jsonc
+"services": [{ "binding": "TOOLS", "service": "my-tools", "entrypoint": "ToolsMcp" }],
+"vars": { "INTERNAL_MCP_HOSTS": "tools.internal=TOOLS" }
+```
+
+An MCP integration with endpoint `https://tools.internal/mcp/websearch` is then
+served by `env.TOOLS.fetch(request)`, for the MCP transport and for the plain
+fetch (OAuth discovery, probes, `/.well-known/*`; the bound Worker should answer
+404 for paths it does not serve). The match is on the exact hostname, outside the
+SSRF guard. Every other host takes the guarded path unchanged, any other
+`*.internal` host is refused, and an external server redirecting to an internal
+host stays blocked. Requests to a binding go out with `redirect: "manual"`, so a
+redirect answered by the bound Worker reaches the caller as is and is never
+followed. A host naming a missing binding fails config load: the Worker answers
+503 with a message naming the host and the binding. Both the Worker and
+`McpSessionDO` read the same config, so both paths route.
+
+**Trust boundary.** The boundary is the Cloudflare account, not Executor: any
+Worker in the same account could bind the target Worker, so the bound Worker
+must be private (no public route, `workers_dev` and preview URLs off) and
+Executor is its only intended caller. Hosts match exactly (`tools.internal`, not
+`x.tools.internal`), and a redirect from an external server into `*.internal` is
+refused. Because an integration pointing at an internal host reaches code that
+skips the SSRF guard, only admins should create such integrations, never
+end users.
+
 ## Deploy
 
 ```bash
@@ -74,6 +107,11 @@ bun install
 cd apps/host-cloudflare
 bun run deploy   # vite build -> assert-shell-asset -> wrangler deploy
 ```
+
+If the deployment declares internal service bindings, deploy through the
+monorepo that owns them (`pnpm executor:deploy`) instead of `bun run deploy`
+here. A deploy from this directory does not carry those bindings, and internal
+integrations then fail until it is redeployed the right way.
 
 Requires `bunx wrangler login` to the Skyward account. `keep_vars` preserves
 the Access variables set above, so there is nothing else to pass. Do not
