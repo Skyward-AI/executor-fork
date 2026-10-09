@@ -339,6 +339,7 @@ export const makeScopedExecutor = <
       allowLocalNetwork: config.allowLocalNetwork,
       requireTls: config.requireTls,
       internalHosts: config.internalHosts,
+      internalCaller: accountId,
     };
     const httpClientLayer = makeHostedHttpClientLayer(hostedHttpOptions);
     const hostedFetch = makeHostedFetch(hostedHttpOptions);

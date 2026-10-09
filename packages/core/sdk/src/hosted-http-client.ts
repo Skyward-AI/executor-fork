@@ -34,6 +34,13 @@ export interface HostedHttpClientOptions {
    * one. Empty or absent leaves routing off.
    */
   readonly internalHosts?: HostedInternalHosts;
+  /**
+   * The acting account, sent to internal hosts only as `x-executor-account-id`
+   * so the bound Worker can authorize per caller. The binding is the trust
+   * boundary: any value the request already carried is replaced, and absent
+   * means the header is removed.
+   */
+  readonly internalCaller?: string;
   readonly allowLocalNetwork?: boolean;
   /** Require HTTPS, except private addresses explicitly allowed for local development. */
   readonly requireTls?: boolean;
@@ -297,6 +304,9 @@ const guardFetch = (
     return await underlying(current, { ...currentInit, redirect: "manual" });
   }) as typeof globalThis.fetch;
 
+/** Carries `HostedHttpClientOptions.internalCaller` to an internal host. */
+export const INTERNAL_CALLER_HEADER = "x-executor-account-id";
+
 // The router sits OUTSIDE the guard: a configured internal host goes straight to
 // its binding, everything else takes the guarded path unchanged.
 const routeInternalHosts = (
@@ -311,7 +321,13 @@ const routeInternalHosts = (
     const request = new Request(input, { ...init, redirect: "manual" });
     const hostname = normalizeHostname(new URL(request.url).hostname);
     const target = Object.hasOwn(hosts, hostname) ? hosts[hostname] : undefined;
-    if (target) return await target.fetch(request);
+    if (target) {
+      request.headers.delete(INTERNAL_CALLER_HEADER);
+      if (options.internalCaller) {
+        request.headers.set(INTERNAL_CALLER_HEADER, options.internalCaller);
+      }
+      return await target.fetch(request);
+    }
     if (isInternalHostname(hostname)) {
       return await Effect.runPromise(
         Effect.fail(
