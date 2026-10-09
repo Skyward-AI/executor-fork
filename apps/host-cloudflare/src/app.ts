@@ -1,10 +1,18 @@
 import { Effect } from "effect";
 import { HttpEffect, HttpRouter } from "effect/unstable/http";
 
-import { dbProviderLayer, ExecutorApp, textFailureStrategy } from "@executor-js/api/server";
+import {
+  dbProviderLayer,
+  ExecutorApp,
+  type ExecutorDbHandle,
+  makeScopedExecutor,
+  textFailureStrategy,
+} from "@executor-js/api/server";
 
+import { internalPrincipal } from "./auth/cloudflare-access";
+import { reconcileInternalIntegrations } from "./internal-integrations/reconcile";
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
-import { makeCloudflarePlugins } from "./plugins";
+import { makeCloudflarePlugins, type CloudflarePlugins } from "./plugins";
 import { createD1ExecutorDb } from "./db/d1";
 import { cloudflareAccessIdentityLayer } from "./auth/cloudflare-access";
 import {
@@ -33,6 +41,41 @@ import { preloadQuickJs } from "./quickjs";
 // so the providers close over it instead of reading process.env.
 // ===========================================================================
 
+let internalIntegrationsReconciled: Promise<void> | null = null;
+
+// Once per isolate, by a system executor that may write org rows. Never fails the boot.
+const reconcileOncePerIsolate = (
+  config: CloudflareConfig,
+  dbHandle: ExecutorDbHandle,
+): Promise<void> => {
+  if (config.internalIntegrations.length === 0) return Promise.resolve();
+  internalIntegrationsReconciled ??= Effect.runPromise(
+    Effect.gen(function* () {
+      const accountId = internalPrincipal(config, { subject: null, email: null })?.accountId;
+      if (accountId === undefined) return;
+      const executor = yield* makeScopedExecutor<CloudflarePlugins>(
+        accountId,
+        config.organizationId,
+        config.organizationName,
+        { orgWrites: "allowed" },
+      );
+      yield* reconcileInternalIntegrations(executor, config.internalIntegrations).pipe(
+        Effect.ensuring(executor.close().pipe(Effect.ignore)),
+      );
+    }).pipe(
+      Effect.provide(dbProviderLayer(Effect.succeed(dbHandle))),
+      Effect.provide(makeCloudflarePluginsProvider(config)),
+      Effect.provide(makeCloudflareHostConfig(config)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("internal integration reconcile aborted", cause).pipe(
+          Effect.annotateLogs({ step: "reconcile-internal-integrations" }),
+        ),
+      ),
+    ),
+  );
+  return internalIntegrationsReconciled;
+};
+
 export const makeCloudflareApp = async (
   env: CloudflareEnv,
   config: CloudflareConfig = loadConfig(env),
@@ -46,6 +89,7 @@ export const makeCloudflareApp = async (
   // Open and idempotently bring up the D1 schema once. This is the long-lived
   // handle the per-request scoped executor reads through the DbProvider seam.
   const dbHandle = await createD1ExecutorDb(env.DB, env.BLOBS);
+  await reconcileOncePerIsolate(config, dbHandle);
   const identityLayer = cloudflareAccessIdentityLayer(config);
   const mcpAgentHandler = makeCloudflareMcpAgentHandler(config);
   const approvalHandler = makeCloudflareApprovalHandler(config, env);
