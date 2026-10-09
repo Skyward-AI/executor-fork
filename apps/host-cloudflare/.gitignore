@@ -2,3 +2,5 @@ dist/
 .dev.vars
 .wrangler/
 wrangler.preview.jsonc
+.wrangler.deploy.json
+.wrangler.local.json
