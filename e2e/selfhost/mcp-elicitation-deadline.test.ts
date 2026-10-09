@@ -69,8 +69,9 @@ scenario(
           code: `return await tools.${slug}.org.main.approve({});`,
         });
         expect(paused.text).toContain("executionId:");
-        // Cross the production 60-second active-work deadline. This is the
-        // behavior under test: a human waiting must consume none of that budget.
+        // The production active-work deadline is one hour, too long to cross
+        // here. The unit tests in plugin-mcp prove the deadline pauses; this
+        // checks that a delayed approval still resumes with its chosen lifetime.
         yield* Effect.sleep("65 seconds");
         const executionId = decodeExecutionId(/\bexecutionId:\s*(\S+)/.exec(paused.text)?.[1]);
         const completed = yield* session.call("resume", {
