@@ -44,6 +44,8 @@
       "bucket_name": "executor-blobs",
     },
   ],
+  // Deployed version id, used to refresh internal integration catalogs once per version.
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   // Dynamic Worker Loader binding: when present, sandboxed code runs in real
   // workerd isolates with `globalOutbound: null` (platform-enforced zero egress)
   // via @executor-js/runtime-dynamic-worker; without it the host falls back to
