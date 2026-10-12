@@ -24,7 +24,7 @@ import * as Effect from "effect/Effect";
 
 export const WORKERD_VERSION = "1.20260708.1";
 
-const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_TIMEOUT_MS = 60 * 60_000;
 const DEFAULT_HOST_TIMEOUT_GRACE_MS = 30_000;
 export class WorkerdSubprocessError extends Data.TaggedError("WorkerdSubprocessError")<{
   readonly message: string;

@@ -33,11 +33,11 @@ const engine = createExecutionEngine({
 
 ### Options
 
-| Option              | Default    | Description                       |
-| ------------------- | ---------- | --------------------------------- |
-| `timeoutMs`         | `300_000`  | Max wall-clock time per execution |
-| `memoryLimitBytes`  | `64 * 1MB` | Max memory the VM can allocate    |
-| `maxStackSizeBytes` | `1 * 1MB`  | Max call-stack depth              |
+| Option              | Default     | Description                       |
+| ------------------- | ----------- | --------------------------------- |
+| `timeoutMs`         | `3_600_000` | Max wall-clock time per execution |
+| `memoryLimitBytes`  | `64 * 1MB`  | Max memory the VM can allocate    |
+| `maxStackSizeBytes` | `1 * 1MB`   | Max call-stack depth              |
 
 ### Swapping the QuickJS build
 
