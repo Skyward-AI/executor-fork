@@ -31,7 +31,7 @@ export type DenoSubprocessExecutorOptions = {
 };
 
 const IPC_PREFIX = "@@executor-ipc@@";
-const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_TIMEOUT_MS = 60 * 60_000;
 
 // ---------------------------------------------------------------------------
 // Errors

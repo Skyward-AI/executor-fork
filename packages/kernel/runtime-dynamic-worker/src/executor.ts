@@ -44,7 +44,7 @@ export class DynamicWorkerExecutionError extends Data.TaggedError("DynamicWorker
 export type DynamicWorkerExecutorOptions = {
   readonly loader: WorkerLoader;
   /**
-   * Timeout in milliseconds for code execution. Defaults to 5 minutes.
+   * Timeout in milliseconds for code execution. Defaults to 60 minutes.
    */
   readonly timeoutMs?: number;
   /**
@@ -103,7 +103,7 @@ type WorkerRpcResponse = WorkerRpcSuccess | WorkerRpcFailure;
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_TIMEOUT_MS = 60 * 60_000;
 /**
  * Extra wall-clock the host waits beyond the effective in-sandbox timeout
  * before declaring the isolate wedged. The in-sandbox timer should always fire

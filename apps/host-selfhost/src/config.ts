@@ -76,7 +76,7 @@ export interface SelfHostConfig {
   readonly orgSlug: string;
   /**
    * Sandbox execution budget passed to the QuickJS runtime, or undefined for
-   * the runtime's own default (5 minutes). An operator knob in principle, but
+   * the runtime's own default (60 minutes). An operator knob in principle, but
    * its real consumer is the e2e harness, which shrinks it to seconds so the
    * sandbox-deadline scenario proves its race without waiting out real
    * minutes (the same pattern as MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS on cloud).
