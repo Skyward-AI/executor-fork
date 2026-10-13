@@ -318,7 +318,10 @@ const routeInternalHosts = (
   return (async (input, init) => {
     // `manual`: a 3xx from the bound Worker comes back to the caller as is. The
     // runtime would otherwise follow its `Location` outside the SSRF guard.
-    const request = new Request(input, { ...init, redirect: "manual" });
+    const request = new Request(input as ConstructorParameters<typeof Request>[0], {
+      ...init,
+      redirect: "manual",
+    });
     const hostname = normalizeHostname(new URL(request.url).hostname);
     const target = Object.hasOwn(hosts, hostname) ? hosts[hostname] : undefined;
     if (target) {

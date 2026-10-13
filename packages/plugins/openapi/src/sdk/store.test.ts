@@ -36,7 +36,12 @@ function makeRecordingStore() {
     get: () => Effect.succeed(null),
     getForOwner: () => Effect.succeed(null),
     list: () => Effect.succeed([]),
-    put: (input) => Effect.succeed(seed(input.owner, "unused", input.key, input.data)),
+    put: (input) =>
+      Effect.succeed(
+        seed(input.owner, "unused", input.key, input.data) as PluginStorageEntry<
+          Record<string, unknown>
+        >,
+      ),
     query: () => Effect.succeed([]),
     count: () => Effect.succeed(0),
     remove: () => Effect.void,
