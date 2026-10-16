@@ -11,15 +11,16 @@ const makeRecordingD1 = (
 ): {
   readonly db: D1Database;
   readonly statements: string[];
-  readonly failWhen: (predicate: ((sql: string) => boolean) | null) => void;
+  readonly failWhen: (predicate: ((sql: string) => boolean) | null, message?: string) => void;
 } => {
   const statements: string[] = [];
   let failurePredicate: ((sql: string) => boolean) | null = null;
+  let failureMessage = "forced D1 failure";
   const record = (sql: string): void => {
     statements.push(sql);
     if (failurePredicate?.(sql)) {
       // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- test boundary: the fake D1 adapter must reject exactly where the real D1 query would reject
-      throw new Error("forced D1 failure");
+      throw new Error(failureMessage);
     }
   };
   const prepare = (sql: string) => {
@@ -47,8 +48,9 @@ const makeRecordingD1 = (
   return {
     db,
     statements,
-    failWhen: (predicate) => {
+    failWhen: (predicate, message = "forced D1 failure") => {
       failurePredicate = predicate;
+      failureMessage = message;
     },
   };
 };
@@ -201,6 +203,30 @@ describe("createD1ExecutorDb", () => {
     failWhen(null);
     const recovered = await createD1ExecutorDb(db, undefined);
     await recovered.close();
+
+    await sqlite.close();
+  });
+
+  it("rides out a transient D1 internal error on the schema fingerprint read", async () => {
+    const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
+    const { db, statements, failWhen } = makeRecordingD1(sqlite.client);
+    const prepared = await createD1ExecutorDb(db, undefined);
+    await prepared.close();
+    let fingerprintReads = 0;
+    failWhen((sql) => {
+      if (!sql.startsWith("SELECT fingerprint")) return false;
+      fingerprintReads += 1;
+      return fingerprintReads === 1;
+    }, "D1_ERROR: internal error; reference = 6kq3v9j0mmpdu3qgcsbmz2ib");
+
+    const secondStart = statements.length;
+    const handle = await createD1ExecutorDb(db, undefined);
+    await handle.close();
+
+    expect(
+      statements.slice(secondStart).filter((sql) => sql.startsWith("SELECT fingerprint")),
+    ).toHaveLength(2);
+    expect(statements.slice(secondStart).filter(isRuntimeSchemaStatement)).toEqual([]);
 
     await sqlite.close();
   });

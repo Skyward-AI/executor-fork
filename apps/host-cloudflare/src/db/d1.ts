@@ -15,6 +15,7 @@ import { makeR2BlobStore } from "@executor-js/cloudflare/blob-store";
 
 import { CLOUDFLARE_NAMESPACE, CLOUDFLARE_SCHEMA_VERSION } from "../config";
 import { prepareCloudflareD1Data } from "./data-migrations";
+import { withD1TransientRetry } from "./d1-retry";
 
 const SCHEMA_FINGERPRINT_TABLE = `private_${CLOUDFLARE_NAMESPACE}_schema_fingerprint`;
 const SCHEMA_FINGERPRINT_ID = "runtime-schema";
@@ -85,9 +86,10 @@ const storePreparedSchemaFingerprint = async (
 // ---------------------------------------------------------------------------
 
 export const createD1ExecutorDb = async (
-  db: D1Database,
+  binding: D1Database,
   blobs: R2Bucket | undefined,
 ): Promise<ExecutorDbHandle> => {
+  const db = withD1TransientRetry(binding);
   const options = {
     tables: collectTables(),
     namespace: CLOUDFLARE_NAMESPACE,
