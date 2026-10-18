@@ -1,33 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-// oxlint-disable-next-line executor/no-vitest-import -- vi.mock hoisting needs the vitest import
-import { vi } from "vitest";
 import type { D1Database } from "@cloudflare/workers-types";
 
 import { collectTables, type SqliteDataMigrationClient } from "@executor-js/sdk";
 import { createSqliteTestFumaDb } from "@executor-js/sdk/testing";
 
-const { extraMigrationIds, prepareSpy } = vi.hoisted(() => ({
-  extraMigrationIds: [] as string[],
-  prepareSpy: vi.fn(),
-}));
-
-vi.mock("./data-migrations", async (importOriginal) => {
-  const original = await importOriginal<typeof import("./data-migrations")>();
-  return {
-    ...original,
-    cloudflareDataMigrationIds: () => [
-      ...original.cloudflareDataMigrationIds(),
-      ...extraMigrationIds,
-    ],
-    prepareCloudflareD1Data: (...args: Parameters<typeof original.prepareCloudflareD1Data>) => {
-      prepareSpy();
-      return original.prepareCloudflareD1Data(...args);
-    },
-  };
-});
-
-const { createD1ExecutorDb } = await import("./d1");
-const { cloudflareDataMigrationIds } = await import("./data-migrations");
+import { createD1ExecutorDb } from "./d1";
+import { cloudflareDataMigrationIds } from "./data-migrations";
 
 const readMarker = async (client: SqliteDataMigrationClient): Promise<string> => {
   const result = await client.execute(
@@ -93,21 +71,39 @@ const isRuntimeSchemaStatement = (sql: string): boolean => {
   return !normalized.includes("DATA_MIGRATION");
 };
 
+const ranDataMigrations = (statements: readonly string[]): boolean =>
+  statements.some((sql) => sql.includes("SELECT name FROM data_migration"));
+
+const setMarker = (client: SqliteDataMigrationClient, fingerprint: string) =>
+  client.execute({
+    sql: `UPDATE private_executor_cloudflare_schema_fingerprint SET fingerprint = ? WHERE id = 'runtime-schema'`,
+    args: [fingerprint],
+  });
+
+// Opens the database once so it is current, then opens it again and returns
+// only what the second open sent to D1.
+const openTwice = async (
+  db: D1Database,
+  statements: string[],
+  between: () => Promise<unknown> = async () => {},
+): Promise<string[]> => {
+  const first = await createD1ExecutorDb(db, undefined);
+  await first.close();
+  await between();
+  const start = statements.length;
+  const second = await createD1ExecutorDb(db, undefined);
+  await second.close();
+  return statements.slice(start);
+};
+
 describe("createD1ExecutorDb", () => {
   it("does not repeat runtime schema DDL after the current schema was prepared", async () => {
     const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
     const { db, statements } = makeRecordingD1(sqlite.client);
 
-    const first = await createD1ExecutorDb(db, undefined);
-    await first.close();
-    const firstSchemaStatements = statements.filter(isRuntimeSchemaStatement);
-    expect(firstSchemaStatements.length).toBeGreaterThan(0);
+    const secondStatements = await openTwice(db, statements);
 
-    const secondStart = statements.length;
-    const second = await createD1ExecutorDb(db, undefined);
-    await second.close();
-    const secondStatements = statements.slice(secondStart);
-
+    expect(statements.filter(isRuntimeSchemaStatement).length).toBeGreaterThan(0);
     expect(secondStatements.filter(isRuntimeSchemaStatement)).toEqual([]);
 
     await sqlite.close();
@@ -116,16 +112,26 @@ describe("createD1ExecutorDb", () => {
   it("opens a current database with exactly one D1 query", async () => {
     const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
     const { db, statements } = makeRecordingD1(sqlite.client);
-    const first = await createD1ExecutorDb(db, undefined);
-    await first.close();
 
-    const secondStart = statements.length;
-    const second = await createD1ExecutorDb(db, undefined);
-    await second.close();
+    const secondStatements = await openTwice(db, statements);
 
-    const secondStatements = statements.slice(secondStart);
     expect(secondStatements).toHaveLength(1);
     expect(secondStatements[0]).toContain("SELECT fingerprint");
+
+    await sqlite.close();
+  });
+
+  it("records every known data migration in the ledger", async () => {
+    const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
+    const { db } = makeRecordingD1(sqlite.client);
+
+    const handle = await createD1ExecutorDb(db, undefined);
+    await handle.close();
+
+    const ledger = await sqlite.client.execute(`SELECT name FROM data_migration`);
+    expect(ledger.rows.map((row) => row.name)).toEqual(
+      expect.arrayContaining([...cloudflareDataMigrationIds]),
+    );
 
     await sqlite.close();
   });
@@ -133,27 +139,17 @@ describe("createD1ExecutorDb", () => {
   it("runs the data migrations again when the stored fingerprint predates the migration list", async () => {
     const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
     const { db, statements } = makeRecordingD1(sqlite.client);
-    const first = await createD1ExecutorDb(db, undefined);
-    await first.close();
-    const ids = cloudflareDataMigrationIds();
-    const missing = ids[ids.length - 1];
-    await sqlite.client.execute({
-      sql: "DELETE FROM data_migration WHERE name = ?",
-      args: [missing],
+    const missing = cloudflareDataMigrationIds[cloudflareDataMigrationIds.length - 1];
+
+    const secondStatements = await openTwice(db, statements, async () => {
+      await sqlite.client.execute({
+        sql: "DELETE FROM data_migration WHERE name = ?",
+        args: [missing],
+      });
+      await setMarker(sqlite.client, "older");
     });
-    await sqlite.client.execute(
-      `UPDATE private_executor_cloudflare_schema_fingerprint
-       SET fingerprint = 'older'
-       WHERE id = 'runtime-schema'`,
-    );
 
-    const secondStart = statements.length;
-    const second = await createD1ExecutorDb(db, undefined);
-    await second.close();
-
-    expect(
-      statements.slice(secondStart).some((sql) => sql.includes("SELECT name FROM data_migration")),
-    ).toBe(true);
+    expect(ranDataMigrations(secondStatements)).toBe(true);
     const ledger = await sqlite.client.execute(`SELECT name FROM data_migration`);
     expect(ledger.rows.map((row) => row.name)).toContain(missing);
 
@@ -164,18 +160,9 @@ describe("createD1ExecutorDb", () => {
     const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
     const { db, statements } = makeRecordingD1(sqlite.client);
 
-    const first = await createD1ExecutorDb(db, undefined);
-    await first.close();
-    await sqlite.client.execute(
-      `UPDATE private_executor_cloudflare_schema_fingerprint
-       SET fingerprint = 'stale'
-       WHERE id = 'runtime-schema'`,
+    const secondStatements = await openTwice(db, statements, () =>
+      setMarker(sqlite.client, "stale"),
     );
-
-    const secondStart = statements.length;
-    const second = await createD1ExecutorDb(db, undefined);
-    await second.close();
-    const secondStatements = statements.slice(secondStart);
 
     expect(
       secondStatements.some((sql) => sql.startsWith('CREATE TABLE IF NOT EXISTS "integration"')),
@@ -186,20 +173,14 @@ describe("createD1ExecutorDb", () => {
 
   it("adds the compiled artifact columns to a database that predates them", async () => {
     const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
-    const { db } = makeRecordingD1(sqlite.client);
-    const first = await createD1ExecutorDb(db, undefined);
-    await first.close();
-    for (const column of ["compiled_fingerprint", "compiled_js", "compiled_css"]) {
-      await sqlite.client.execute(`ALTER TABLE "artifact" DROP COLUMN "${column}"`);
-    }
-    await sqlite.client.execute(
-      `UPDATE private_executor_cloudflare_schema_fingerprint
-       SET fingerprint = 'stale'
-       WHERE id = 'runtime-schema'`,
-    );
+    const { db, statements } = makeRecordingD1(sqlite.client);
 
-    const second = await createD1ExecutorDb(db, undefined);
-    await second.close();
+    await openTwice(db, statements, async () => {
+      for (const column of ["compiled_fingerprint", "compiled_js", "compiled_css"]) {
+        await sqlite.client.execute(`ALTER TABLE "artifact" DROP COLUMN "${column}"`);
+      }
+      await setMarker(sqlite.client, "stale");
+    });
 
     const columns = await sqlite.client.execute(`PRAGMA table_info("artifact")`);
     const names = columns.rows.map((row) => String(row.name));
@@ -215,11 +196,7 @@ describe("createD1ExecutorDb", () => {
     const { db } = makeRecordingD1(sqlite.client);
     const prepared = await createD1ExecutorDb(db, undefined);
     await prepared.close();
-    await sqlite.client.execute(
-      `UPDATE private_executor_cloudflare_schema_fingerprint
-       SET fingerprint = 'stale'
-       WHERE id = 'runtime-schema'`,
-    );
+    await setMarker(sqlite.client, "stale");
 
     const handles = await Promise.all([
       createD1ExecutorDb(db, undefined),
@@ -331,50 +308,36 @@ describe("createD1ExecutorDb", () => {
     await sqlite.close();
   });
 
-  it("prepares the database and rewrites the marker when a data migration id is added", async () => {
+  it("rewrites the marker after preparing a database whose marker is out of date", async () => {
     const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
     const { db, statements } = makeRecordingD1(sqlite.client);
-    const first = await createD1ExecutorDb(db, undefined);
-    await first.close();
-    const oldMarker = await readMarker(sqlite.client);
+    let currentMarker = "";
 
-    extraMigrationIds.push("9999-added-migration");
-    prepareSpy.mockClear();
-    const secondStart = statements.length;
-    const second = await createD1ExecutorDb(db, undefined);
-    await second.close();
-    extraMigrationIds.length = 0;
+    const secondStatements = await openTwice(db, statements, async () => {
+      currentMarker = await readMarker(sqlite.client);
+      await setMarker(sqlite.client, "older");
+    });
 
-    expect(prepareSpy).toHaveBeenCalledTimes(1);
-    expect(
-      statements.slice(secondStart).some((sql) => sql.includes("SELECT name FROM data_migration")),
-    ).toBe(true);
-    expect(await readMarker(sqlite.client)).not.toBe(oldMarker);
+    expect(ranDataMigrations(secondStatements)).toBe(true);
+    expect(await readMarker(sqlite.client)).toBe(currentMarker);
 
     await sqlite.close();
   });
 
   it("keeps the old marker when data preparation fails so the next open retries", async () => {
     const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
-    const { db, failWhen } = makeRecordingD1(sqlite.client);
-    const first = await createD1ExecutorDb(db, undefined);
-    await first.close();
-    const oldMarker = await readMarker(sqlite.client);
+    const { db, statements, failWhen } = makeRecordingD1(sqlite.client);
+    let currentMarker = "";
+    await openTwice(db, statements, async () => {
+      currentMarker = await readMarker(sqlite.client);
+      await setMarker(sqlite.client, "older");
+      failWhen((sql) => sql.includes("SELECT name FROM data_migration"));
+      await expect(createD1ExecutorDb(db, undefined)).rejects.toBeDefined();
+      expect(await readMarker(sqlite.client)).toBe("older");
+      failWhen(null);
+    });
 
-    extraMigrationIds.push("9999-added-migration");
-    failWhen((sql) => sql.includes("SELECT name FROM data_migration"));
-    await expect(createD1ExecutorDb(db, undefined)).rejects.toBeDefined();
-
-    expect(await readMarker(sqlite.client)).toBe(oldMarker);
-
-    failWhen(null);
-    prepareSpy.mockClear();
-    const retried = await createD1ExecutorDb(db, undefined);
-    await retried.close();
-    extraMigrationIds.length = 0;
-
-    expect(prepareSpy).toHaveBeenCalledTimes(1);
-    expect(await readMarker(sqlite.client)).not.toBe(oldMarker);
+    expect(await readMarker(sqlite.client)).toBe(currentMarker);
 
     await sqlite.close();
   });
