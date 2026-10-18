@@ -237,15 +237,19 @@ const reconcileOne = (
  * stored endpoint equals the declared one, lists the current tools and
  * refreshes the `main` connection only when their content hash differs from the
  * stored one; the hash is stored after a successful refresh. Never updates or
- * deletes anything, and never fails the caller.
+ * deletes anything, and never fails the caller. Entries run concurrently; each
+ * catches its own failure.
  */
 export const reconcileInternalIntegrations = (
   executor: InternalIntegrationExecutor,
   entries: readonly InternalIntegration[],
   deps: ReconcileDeps = {},
 ): Effect.Effect<ReadonlyArray<readonly [string, ReconcileOutcome]>> =>
-  Effect.forEach(entries, (entry) =>
-    reconcileOne(executor, entry, deps).pipe(
-      Effect.map((outcome) => [entry.slug, outcome] as const),
-    ),
+  Effect.forEach(
+    entries,
+    (entry) =>
+      reconcileOne(executor, entry, deps).pipe(
+        Effect.map((outcome) => [entry.slug, outcome] as const),
+      ),
+    { concurrency: "unbounded" },
   );

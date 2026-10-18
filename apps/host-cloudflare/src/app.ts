@@ -4,7 +4,6 @@ import { HttpEffect, HttpRouter } from "effect/unstable/http";
 import {
   dbProviderLayer,
   ExecutorApp,
-  type ExecutorDbHandle,
   makeScopedExecutor,
   textFailureStrategy,
 } from "@executor-js/api/server";
@@ -42,34 +41,13 @@ import { preloadQuickJs } from "./quickjs";
 // so the providers close over it instead of reading process.env.
 // ===========================================================================
 
-let internalIntegrationsReconciled: Promise<void> | null = null;
-
-// Once per isolate, by a system executor that may write org rows. Also refreshes
-// existing declared catalogs whose tool list changed. Never fails the boot.
-const reconcileOncePerIsolate = (
-  config: CloudflareConfig,
-  dbHandle: ExecutorDbHandle,
-  env: CloudflareEnv,
-): Promise<void> => {
-  if (config.internalIntegrations.length === 0) return Promise.resolve();
-  internalIntegrationsReconciled ??= Effect.runPromise(
-    Effect.gen(function* () {
-      const accountId = internalPrincipal(config, { subject: null, email: null })?.accountId;
-      if (accountId === undefined) return;
-      const executor = yield* makeScopedExecutor<CloudflarePlugins>(
-        accountId,
-        config.organizationId,
-        config.organizationName,
-        { orgWrites: "allowed" },
-      );
-      yield* reconcileInternalIntegrations(executor, config.internalIntegrations, {
-        listTools: makeInternalListTools(config.internalHosts),
-        store: env.BLOBS,
-      }).pipe(Effect.ensuring(executor.close().pipe(Effect.ignore)));
-    }).pipe(
-      Effect.provide(dbProviderLayer(Effect.succeed(dbHandle))),
-      Effect.provide(makeCloudflarePluginsProvider(config)),
-      Effect.provide(makeCloudflareHostConfig(config)),
+// One reconcile pass, run from the cron trigger (never on the request path), by a
+// system executor that may write org rows. Also refreshes existing declared
+// catalogs whose tool list changed. Never throws.
+export const reconcileInternalIntegrationsOnce = (env: CloudflareEnv): Promise<void> =>
+  Effect.runPromise(
+    Effect.sync(() => loadConfig(env)).pipe(
+      Effect.flatMap(reconcileWithConfig(env)),
       Effect.catchCause((cause) =>
         Effect.logWarning("internal integration reconcile aborted", cause).pipe(
           Effect.annotateLogs({ step: "reconcile-internal-integrations" }),
@@ -77,7 +55,28 @@ const reconcileOncePerIsolate = (
       ),
     ),
   );
-  return internalIntegrationsReconciled;
+
+const reconcileWithConfig = (env: CloudflareEnv) => (config: CloudflareConfig) => {
+  if (config.internalIntegrations.length === 0) return Effect.void;
+  return Effect.gen(function* () {
+    const accountId = internalPrincipal(config, { subject: null, email: null })?.accountId;
+    if (accountId === undefined) return;
+    yield* Effect.promise(() => preloadQuickJs());
+    const dbHandle = yield* Effect.promise(() => createD1ExecutorDb(env.DB, env.BLOBS));
+    const executor = yield* makeScopedExecutor<CloudflarePlugins>(
+      accountId,
+      config.organizationId,
+      config.organizationName,
+      { orgWrites: "allowed" },
+    ).pipe(Effect.provide(dbProviderLayer(Effect.succeed(dbHandle))));
+    yield* reconcileInternalIntegrations(executor, config.internalIntegrations, {
+      listTools: makeInternalListTools(config.internalHosts),
+      store: env.BLOBS,
+    }).pipe(Effect.ensuring(executor.close().pipe(Effect.ignore)));
+  }).pipe(
+    Effect.provide(makeCloudflarePluginsProvider(config)),
+    Effect.provide(makeCloudflareHostConfig(config)),
+  );
 };
 
 export const makeCloudflareApp = async (
@@ -93,7 +92,6 @@ export const makeCloudflareApp = async (
   // Open and idempotently bring up the D1 schema once. This is the long-lived
   // handle the per-request scoped executor reads through the DbProvider seam.
   const dbHandle = await createD1ExecutorDb(env.DB, env.BLOBS);
-  await reconcileOncePerIsolate(config, dbHandle, env);
   const identityLayer = cloudflareAccessIdentityLayer(config);
   const mcpAgentHandler = makeCloudflareMcpAgentHandler(config);
   const approvalHandler = makeCloudflareApprovalHandler(config, env);
