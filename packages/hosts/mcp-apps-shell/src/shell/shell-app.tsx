@@ -25,6 +25,10 @@ import { PREVIEW_CAPTURE_HOST_CONTEXT_KEY, SAVE_ARTIFACT_PREVIEW_TOOL } from "./
 import { ARTIFACT_RENDERED_TOOL, RENDER_SIGNAL_HOST_CONTEXT_KEY } from "./render-signal";
 import { isFillDisplayMode } from "./display-mode";
 import innerRendererScript from "virtual:executor-inner-renderer";
+// The JSX compiler half of the inner frame, left out of the srcdoc when the
+// artifact arrives precompiled.
+import innerCompilerScript from "virtual:executor-inner-compiler";
+import { ARTIFACT_COMPILE_FINGERPRINT } from "../precompile/compile-fingerprint.gen";
 // Raw source, not a compiled stylesheet: the inner frame compiles utilities on
 // demand against these tokens. See `buildRendererSrcDoc`.
 import themeSource from "./theme.css?raw";
@@ -54,6 +58,8 @@ export type McpAppsShellHost = ToolCallHost & {
 type RendererState = {
   token: string;
   code: string;
+  /** The server's JS for `code`, when it sent one this shell can trust. */
+  compiledJs: string | null;
   srcDoc: string;
   config: Record<string, unknown>;
   height: number;
@@ -188,6 +194,30 @@ const createRendererToken = (): string => {
 const escapeInlineHtml = (value: string): string =>
   value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+/** What the server precompiled for an artifact, once checked against this
+ *  shell: each half is null when the frame has to do that step itself. */
+interface RenderPlan {
+  readonly js: string | null;
+  readonly css: string | null;
+}
+
+const RUNTIME_RENDER_PLAN: RenderPlan = { js: null, css: null };
+
+/**
+ * Trust compiled output only from the compiler this shell was built with. The
+ * fingerprint differs after a deploy or from a client holding an old shell, and
+ * then the frame compiles everything itself: slower, but correct.
+ */
+const readRenderPlan = (compiled: unknown): RenderPlan => {
+  if (!isRecord(compiled) || compiled.fingerprint !== ARTIFACT_COMPILE_FINGERPRINT) {
+    return RUNTIME_RENDER_PLAN;
+  }
+  return {
+    js: typeof compiled.js === "string" ? compiled.js : null,
+    css: typeof compiled.css === "string" ? compiled.css : null,
+  };
+};
+
 const escapeStyleContent = (value: string): string => value.replace(/<\/style/gi, "<\\/style");
 
 const escapeScriptContent = (value: string): string => value.replace(/<\/script/gi, "<\\/script");
@@ -227,13 +257,26 @@ const collectShellCss = (): string =>
  *    theme as SOURCE, in the `text/tailwindcss` style tag `@tailwindcss/browser`
  *    looks for, and compiles utilities on demand against executor's tokens.
  *
+ * An artifact the server precompiled skips both halves of that. Its CSS is
+ * embedded ready-made, so there is no compiler to ship and no unstyled first
+ * paint, and its JS is already plain, so the JSX compiler is left out too. Each
+ * half falls back on its own: no CSS (classes built at runtime) keeps the
+ * Tailwind compiler, no JS keeps the JSX compiler.
+ *
  * The compiler is inlined rather than fetched because the CSP here is
  * `default-src 'none'` with no `connect-src` — deliberately, since artifact code
  * is untrusted. Nothing in this frame may open a connection, so everything it
  * needs travels with it.
  */
-const buildRendererSrcDoc = (token: string): string => {
+const buildRendererSrcDoc = (token: string, plan: RenderPlan): string => {
   const css = collectShellCss();
+  const artifactStyles =
+    plan.css === null
+      ? `<style type="text/tailwindcss">@import "tailwindcss";${escapeStyleContent(themeSource)}</style>
+    <script>${escapeScriptContent(tailwindBrowserScript)}</script>`
+      : `<style>${escapeStyleContent(plan.css)}</style>`;
+  const frameCompiler =
+    plan.js === null ? `<script>${escapeScriptContent(innerCompilerScript)}</script>\n    ` : "";
   return `<!doctype html>
 <html>
   <head>
@@ -241,12 +284,11 @@ const buildRendererSrcDoc = (token: string): string => {
     <meta name="executor-render-token" content="${escapeInlineHtml(token)}">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
     <style>${escapeStyleContent(css)}</style>
-    <style type="text/tailwindcss">@import "tailwindcss";${escapeStyleContent(themeSource)}</style>
-    <script>${escapeScriptContent(tailwindBrowserScript)}</script>
+    ${artifactStyles}
   </head>
   <body>
     <div id="root"></div>
-    <script>${escapeScriptContent(innerRendererScript)}</script>
+    ${frameCompiler}<script>${escapeScriptContent(innerRendererScript)}</script>
   </body>
 </html>`;
 };
@@ -556,6 +598,7 @@ export function McpAppsShell({
         postToRenderer({
           type: "executor.render",
           code: current.code,
+          ...(current.compiledJs === null ? {} : { compiledJs: current.compiledJs }),
           theme: hostContext?.theme,
           // The inner frame is the last link in the height chain, and it cannot
           // see the host context — so the mode is told to it, the same way the
@@ -700,13 +743,15 @@ export function McpAppsShell({
   }, [fill, postToRenderer, renderer]);
 
   /** Render a JSX code string in the sandboxed inner iframe. */
-  const renderCode = useCallback((code: string) => {
+  const renderCode = useCallback((code: string, compiled?: unknown) => {
     try {
       const token = createRendererToken();
+      const plan = readRenderPlan(compiled);
       const nextRenderer = {
         token,
         code,
-        srcDoc: buildRendererSrcDoc(token),
+        compiledJs: plan.js,
+        srcDoc: buildRendererSrcDoc(token, plan),
         config: {},
         height: 240,
       };
@@ -739,7 +784,7 @@ export function McpAppsShell({
       if (typeof artifactId === "string") artifactIdRef.current = artifactId;
       const code = params.arguments?.code;
       if (code && typeof code === "string") {
-        renderCode(code);
+        renderCode(code, params.arguments?.compiled);
       }
     };
 
@@ -752,7 +797,7 @@ export function McpAppsShell({
       if (typeof artifactId === "string") artifactIdRef.current = artifactId;
 
       if (code && typeof code === "string") {
-        renderCode(code);
+        renderCode(code, structured?.compiled);
         return;
       }
 

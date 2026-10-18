@@ -7,7 +7,11 @@ import { toast } from "sonner";
 import type { ArtifactId } from "@executor-js/sdk/shared";
 
 import { trackEvent } from "../api/analytics";
-import { useArtifactRenderer, usePreloadArtifactRenderer } from "../api/artifact-renderer";
+import {
+  useArtifactRenderer,
+  usePreloadArtifactRenderer,
+  type ArtifactRendererProps,
+} from "../api/artifact-renderer";
 import {
   artifactAtom,
   artifactsOptimisticAtom,
@@ -219,7 +223,9 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
                 />
               </div>
             ),
-            onSuccess: ({ value }) => <ArtifactStage code={value.code} artifactId={value.id} />,
+            onSuccess: ({ value }) => (
+              <ArtifactStage code={value.code} compiled={value.compiled} artifactId={value.id} />
+            ),
           })
         )}
       </div>
@@ -241,7 +247,11 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
  * A host that registers no renderer still gets a page that explains itself
  * instead of crashing.
  */
-function ArtifactStage(props: { readonly code: string; readonly artifactId: string }) {
+function ArtifactStage(props: {
+  readonly code: string;
+  readonly compiled: ArtifactRendererProps["compiled"];
+  readonly artifactId: string;
+}) {
   const Renderer = useArtifactRenderer();
   // One host per mount: it holds no state, but a new identity each render would
   // retrigger the shell's host effects.
@@ -314,6 +324,7 @@ function ArtifactStage(props: { readonly code: string; readonly artifactId: stri
           <Suspense fallback={skeleton}>
             <Renderer
               code={props.code}
+              compiled={props.compiled}
               artifactId={props.artifactId}
               host={host}
               onRendered={handleRendered}

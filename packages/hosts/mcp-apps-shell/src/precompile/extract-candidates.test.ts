@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { SKILLS } from "@executor-js/execution";
 
 import { extractCandidates, hasDynamicClassConstruction } from "./extract-candidates";
 
@@ -57,6 +58,32 @@ describe("hasDynamicClassConstruction", () => {
   ]) {
     it(`does not flag ${code}`, () => {
       expect(hasDynamicClassConstruction(code)).toBe(false);
+    });
+  }
+});
+
+describe("skill examples", () => {
+  const JSX_BLOCK = /```jsx\n([\s\S]*?)```/g;
+  const CLASS_LITERAL = /className="([^"]*)"/g;
+
+  const blocks = SKILLS.flatMap((skill) =>
+    [...skill.body.matchAll(JSX_BLOCK)].map((match) => ({
+      skill: skill.name,
+      code: match[1] ?? "",
+    })),
+  );
+
+  it("includes examples to check", () => {
+    expect(blocks.length).toBeGreaterThan(5);
+  });
+
+  for (const [index, block] of blocks.entries()) {
+    it(`offers every literal class in ${block.skill} example ${index + 1}`, () => {
+      const candidates = new Set(extractCandidates(block.code));
+      const classes = [...block.code.matchAll(CLASS_LITERAL)].flatMap((match) =>
+        (match[1] ?? "").split(/\s+/).filter((token) => token.length > 0),
+      );
+      expect(classes.filter((token) => !candidates.has(token))).toEqual([]);
     });
   }
 });

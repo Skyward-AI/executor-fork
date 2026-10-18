@@ -3,6 +3,11 @@ declare module "virtual:executor-inner-renderer" {
   export default source;
 }
 
+declare module "virtual:executor-inner-compiler" {
+  const source: string;
+  export default source;
+}
+
 declare module "virtual:executor-tailwind-browser" {
   const source: string;
   export default source;
