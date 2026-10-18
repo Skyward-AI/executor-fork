@@ -135,6 +135,13 @@ export interface HostConfigShape {
    */
   readonly enterpriseManagedRollout?: ExecutorConfig["enterpriseManagedRollout"];
   /**
+   * Forwarded to `ExecutorConfig.artifactCompiler`: precompiles artifact source
+   * at save time so the render frame can skip its own compile. Declared here
+   * because it is a deployment-wide capability both request planes share. Hosts
+   * that omit it keep compiling in the frame.
+   */
+  readonly artifactCompiler?: ExecutorConfig["artifactCompiler"];
+  /**
    * Forwarded verbatim to `ExecutorConfig.toolsSyncTtlMs`: how long a
    * connection's persisted remote tool catalog stays fresh. Omit to take the
    * SDK default (15 minutes); `null` disables time-based re-sync. Declared
@@ -372,6 +379,7 @@ export const makeScopedExecutor = <
       oauthCallbackStateOrgSlug: orgSlug,
       firstPartyOAuthClients: config.firstPartyOAuthClients,
       enterpriseManagedRollout: config.enterpriseManagedRollout,
+      artifactCompiler: config.artifactCompiler,
       coreTools: {
         webBaseUrl,
         orgSlug,

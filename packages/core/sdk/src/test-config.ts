@@ -134,6 +134,7 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly onIntegrationChange?: ExecutorConfig<TPlugins>["onIntegrationChange"];
   readonly firstPartyOAuthClients?: ExecutorConfig<TPlugins>["firstPartyOAuthClients"];
   readonly enterpriseManagedRollout?: ExecutorConfig<TPlugins>["enterpriseManagedRollout"];
+  readonly artifactCompiler?: ExecutorConfig<TPlugins>["artifactCompiler"];
   /** Workspace-settings permission for the test binding (see
    *  `ExecutorConfig.orgWrites`). Defaults to allowed, like production hosts
    *  with no role model. */
@@ -183,6 +184,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
     firstPartyOAuthClients: options?.firstPartyOAuthClients,
     enterpriseManagedRollout: options?.enterpriseManagedRollout,
+    artifactCompiler: options?.artifactCompiler,
     fetch: options?.fetch,
     waitUntil: options?.waitUntil,
   };
