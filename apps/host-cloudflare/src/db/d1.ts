@@ -14,7 +14,11 @@ import {
 import { makeR2BlobStore } from "@executor-js/cloudflare/blob-store";
 
 import { CLOUDFLARE_NAMESPACE, CLOUDFLARE_SCHEMA_VERSION } from "../config";
-import { prepareCloudflareD1Data } from "./data-migrations";
+import {
+  CLOUDFLARE_D1_COMPATIBILITY_VERSION,
+  cloudflareDataMigrationIds,
+  prepareCloudflareD1Data,
+} from "./data-migrations";
 import { withD1TransientRetry } from "./d1-retry";
 
 const SCHEMA_FINGERPRINT_TABLE = `private_${CLOUDFLARE_NAMESPACE}_schema_fingerprint`;
@@ -105,19 +109,21 @@ export const createD1ExecutorDb = async (
   // exposes one. A generated fingerprint lets every Worker/DO isolate prove the
   // expected generated schema was already prepared with one primary read instead of
   // replaying dozens of idempotent CREATE/ALTER statements on every database
-  // open. The marker is stored only after the ensure, data migrations, and any
-  // required post-compatibility ensure succeed. Data migrations retain their
-  // own ledger and still run below on every open.
-  const expectedFingerprint = await schemaFingerprint(
-    createDrizzleRuntimeSchemaSqlFromTables(options),
-  );
+  // open. The fingerprint also covers the compatibility-check version and the
+  // ordered data-migration ids, so a current database opens with that one read
+  // and skips both. The marker is stored only after the ensure, compatibility
+  // check, data migrations, and any required post-compatibility ensure succeed.
+  // Data migrations keep their own ledger for databases that need them.
+  const expectedFingerprint = await schemaFingerprint([
+    ...createDrizzleRuntimeSchemaSqlFromTables(options),
+    `compatibility:${CLOUDFLARE_D1_COMPATIBILITY_VERSION}`,
+    `data-migrations:${cloudflareDataMigrationIds().join(",")}`,
+  ]);
   const preparedFingerprint = await readPreparedSchemaFingerprint(db);
   const requiresSchemaPreparation = preparedFingerprint !== expectedFingerprint;
   if (requiresSchemaPreparation) {
     await ensureDrizzleRuntimeSchemaFromTables({ run: (query) => drizzleDb.run(query) }, options);
-  }
-  const migrationResult = await prepareCloudflareD1Data(db, blobs);
-  if (requiresSchemaPreparation) {
+    const migrationResult = await prepareCloudflareD1Data(db, blobs);
     // Compatibility migrations can rebuild a legacy table. Re-run the
     // idempotent ensure before stamping so the database matches the generated
     // schema after migration, including newer nullable columns the legacy
