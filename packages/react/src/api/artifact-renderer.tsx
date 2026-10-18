@@ -31,6 +31,19 @@ import * as React from "react";
 export interface ArtifactRendererProps {
   /** The artifact's stored JSX source. */
   readonly code: string;
+  /**
+   * The server's precompile of `code` (JS and Tailwind CSS), when the host has
+   * one. The shell trusts it only if its fingerprint matches the shell's own
+   * compiler, and otherwise compiles `code` itself.
+   */
+  readonly compiled?:
+    | {
+        readonly fingerprint: string;
+        readonly js: string | null;
+        readonly css: string | null;
+      }
+    | null
+    | undefined;
   /** Which artifact this is. The source addresses integrations by role, so the
    *  server needs the row to resolve a role to a connection; this is how the id
    *  reaches `execute-action`. */

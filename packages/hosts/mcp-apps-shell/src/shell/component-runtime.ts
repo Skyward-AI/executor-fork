@@ -22,8 +22,6 @@ import {
 import * as Components from "./components";
 import * as QueryHooks from "./hooks";
 
-export { compileJsx } from "./compile-jsx";
-
 export type EvaluatedComponent =
   | { component: React.ComponentType; config: Record<string, unknown> }
   | { error: string };

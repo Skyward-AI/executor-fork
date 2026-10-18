@@ -7,6 +7,10 @@
  * by esbuild — it cannot be a normal import, because it must exist as *source
  * text* to be embedded in the sandboxed frame.
  *
+ * `virtual:executor-inner-compiler` is the Sucrase half of that frame, bundled
+ * the same way but kept out of the renderer: a frame whose artifact was
+ * precompiled on the server never loads it.
+ *
  * `mcpAppsShellAsset` supplies `virtual:executor-mcp-apps-shell-html`: the URL
  * of the BUILT, self-contained shell document, emitted into the app's client
  * assets. The console's artifact page loads that URL into a sandboxed iframe
@@ -41,22 +45,18 @@ export interface InnerRendererVitePlugin {
 
 const VIRTUAL_ID = "virtual:executor-inner-renderer";
 const RESOLVED_ID = `\0${VIRTUAL_ID}`;
+const COMPILER_VIRTUAL_ID = "virtual:executor-inner-compiler";
+const COMPILER_RESOLVED_ID = `\0${COMPILER_VIRTUAL_ID}`;
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export const innerRendererEntry = (): string =>
   path.resolve(packageRoot, "src/shell/inner-renderer.tsx");
 
-/**
- * Bundle the inner renderer to a self-contained IIFE string.
- *
- * Exported on its own so a build script or test can produce the same bytes the
- * plugin serves without standing up Vite.
- */
-export const bundleInnerRenderer = async (): Promise<string> => {
+const bundleInnerProgram = async (entry: string, failure: string): Promise<string> => {
   const { build } = await import("esbuild");
   const result = await build({
-    entryPoints: [innerRendererEntry()],
+    entryPoints: [entry],
     absWorkingDir: packageRoot,
     bundle: true,
     write: false,
@@ -75,10 +75,26 @@ export const bundleInnerRenderer = async (): Promise<string> => {
   const js = result.outputFiles[0];
   if (!js) {
     // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: Vite plugin hooks report build failures by throwing
-    throw new Error("Failed to bundle the MCP-Apps inner renderer.");
+    throw new Error(failure);
   }
   return js.text;
 };
+
+/**
+ * Bundle the inner renderer to a self-contained IIFE string.
+ *
+ * Exported on its own so a build script or test can produce the same bytes the
+ * plugin serves without standing up Vite.
+ */
+export const bundleInnerRenderer = (): Promise<string> =>
+  bundleInnerProgram(innerRendererEntry(), "Failed to bundle the MCP-Apps inner renderer.");
+
+export const innerCompilerEntry = (): string =>
+  path.resolve(packageRoot, "src/shell/inner-compiler.ts");
+
+/** Bundle the in-frame JSX compiler to a self-contained IIFE string. */
+export const bundleInnerCompiler = (): Promise<string> =>
+  bundleInnerProgram(innerCompilerEntry(), "Failed to bundle the MCP-Apps inner compiler.");
 
 export const smokeHarnessEntry = (): string =>
   path.resolve(packageRoot, "src/shell/smoke-harness.tsx");
@@ -132,10 +148,17 @@ export const innerRendererPlugin = (): InnerRendererVitePlugin => ({
   name: "executor-inner-renderer-source",
   // `pre` so the virtual id resolves before any generic resolver claims it.
   enforce: "pre",
-  resolveId: (id) => (id === VIRTUAL_ID ? RESOLVED_ID : undefined),
+  resolveId: (id) => {
+    if (id === VIRTUAL_ID) return RESOLVED_ID;
+    if (id === COMPILER_VIRTUAL_ID) return COMPILER_RESOLVED_ID;
+    return undefined;
+  },
   load: async (id) => {
-    if (id !== RESOLVED_ID) return undefined;
-    return `export default ${JSON.stringify(await bundleInnerRenderer())};`;
+    if (id === RESOLVED_ID) return `export default ${JSON.stringify(await bundleInnerRenderer())};`;
+    if (id === COMPILER_RESOLVED_ID) {
+      return `export default ${JSON.stringify(await bundleInnerCompiler())};`;
+    }
+    return undefined;
   },
 });
 

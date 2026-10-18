@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -40,6 +40,9 @@ import type * as Cause from "effect/Cause";
 
 import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
 
+import { ARTIFACT_COMPILE_FINGERPRINT } from "../precompile/compile-fingerprint.gen";
+import { extractCandidates } from "../precompile/extract-candidates";
+import { precompileArtifact } from "../precompile/precompile";
 import { loadMcpAppsShellHtml } from "../shell-html";
 
 type ShellServer = {
@@ -74,7 +77,7 @@ type HostState = {
 
 type BrowserHostWindow = Window & {
   __mcpHostState: HostState;
-  __sendGeneratedUi: (code: string, artifactId: string) => void;
+  __sendGeneratedUi: (code: string, artifactId: string, compiled?: unknown) => void;
   __sendDataResult: (structuredContent: Record<string, unknown>) => void;
   __setHostContext: (context: Record<string, unknown>) => void;
 };
@@ -765,6 +768,76 @@ function App() {
 }
 `;
 
+// Every word in the sources whose classes the shell's own build sheet is scanned
+// from (`globals.css` `@source`): the classes the precompiled path does not have
+// to supply because the srcdoc already carries them. Read from the files rather
+// than from the live sheet, which also holds the classes of this test's fixtures.
+const shellChromeTokens = (): ReadonlySet<string> => {
+  const reactComponents = resolve(packageRoot, "../../react/src/components");
+  const tokens = new Set<string>();
+  for (const root of [resolve(packageRoot, "src/shell"), reactComponents]) {
+    for (const file of readdirSync(root, { recursive: true, encoding: "utf8" })) {
+      if (!/\.tsx?$/.test(file) || /\.test\.tsx?$/.test(file)) continue;
+      for (const word of extractCandidates(readFileSync(resolve(root, file), "utf8"))) {
+        tokens.add(word);
+      }
+    }
+  }
+  return tokens;
+};
+
+const generatedUtilityProbeCode = `function App() {
+  return (
+    <div id="probe">
+      <div id="size" className="text-2xl">24</div>
+      <div id="grid" className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <span>a</span><span>b</span><span>c</span><span>d</span>
+      </div>
+      <div id="arbitrary" className="tracking-[0.08em] text-[11px]">label</div>
+      <div id="token" className="text-muted-foreground">muted</div>
+    </div>
+  );
+}`;
+
+const generatedMarkerCode = (marker: string) =>
+  `function App() { return <div id="marker">${marker}</div>; }`;
+
+const generatedDynamicClassCode = `function App() {
+  const tone = "muted";
+  return (
+    <div id="probe">
+      <div id="dynamic" className={\`bg-\${tone}\`}>dynamic</div>
+      <div id="literal" className="bg-muted">literal</div>
+    </div>
+  );
+}`;
+
+// Fixtures for the extractor corpus guard: each renders on its own and carries
+// a spread of the class shapes the skills teach, so a gap in the extractor
+// shows up as a class that styles at runtime but not on the precompiled path.
+const generatedCorpusCodes: readonly string[] = [
+  generatedUtilityProbeCode,
+  generatedStaticCode,
+  `function App() {
+    const [on, setOn] = useState(true);
+    return (
+      <div className="flex h-full flex-col gap-4 p-4">
+        <Card className="min-h-0 flex-1 overflow-auto">
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Revenue</CardTitle>
+            <Badge variant="secondary" className={cn("tabular-nums", on && "bg-accent text-accent-foreground")}>12%</Badge>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-3 md:grid-cols-4 [&>*]:rounded-md data-[state=open]:bg-muted">
+            <div className="w-[calc(100%-2rem)] text-[11px] tracking-[0.08em] content-['x'] *:p-1">a</div>
+            <div className={\`text-sm \${on ? "font-medium" : "font-normal"}\`}>b</div>
+            <Button size="sm" variant="outline" onClick={() => setOn(!on)} className="h-8 @md:flex">Toggle</Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }`,
+];
+
 const createHostHtml = (shellUrl: string) => `<!doctype html>
 <html>
   <head>
@@ -798,13 +871,13 @@ const createHostHtml = (shellUrl: string) => `<!doctype html>
       // Carries the artifact id beside the code, exactly as the MCP host's
       // create-artifact / show-artifact results do — that is how the shell
       // learns which artifact's bindings resolve its tool calls.
-      window.__sendGeneratedUi = (code, artifactId) => {
+      window.__sendGeneratedUi = (code, artifactId, compiled) => {
         sendToApp({
           jsonrpc: "2.0",
           method: "ui/notifications/tool-result",
           params: {
             content: [{ type: "text", text: "" }],
-            structuredContent: { code, artifactId },
+            structuredContent: { code, artifactId, compiled },
           },
         });
       };
@@ -1521,11 +1594,20 @@ const openHarness = async (browser: Browser, hostUrl: string) => {
   return { page, shellFrame };
 };
 
-const renderGeneratedUi = async (page: Page, shellFrame: Frame, code: string): Promise<Frame> => {
+const renderGeneratedUi = async (
+  page: Page,
+  shellFrame: Frame,
+  code: string,
+  compiled?: unknown,
+): Promise<Frame> => {
   await page.evaluate(
-    ([value, artifactId]) =>
-      (window as unknown as BrowserHostWindow).__sendGeneratedUi(value!, artifactId!),
-    [code, HARNESS_ARTIFACT_ID] as const,
+    (message) =>
+      (window as unknown as BrowserHostWindow).__sendGeneratedUi(
+        message.code,
+        message.artifactId,
+        message.compiled,
+      ),
+    { code, artifactId: HARNESS_ARTIFACT_ID, compiled },
   );
   await shellFrame.locator('iframe[title="Generated UI"]').waitFor({ timeout: 10_000 });
   return waitForInnerFrame(page, shellFrame);
@@ -1821,6 +1903,177 @@ describe("MCP app generated UI browser isolation", () => {
       await page.close();
     }
   }, 30_000);
+
+  describe("precompiled artifacts", () => {
+    const frameState = (innerFrame: Frame) =>
+      innerFrame.evaluate(() => ({
+        compilerMeasures: performance
+          .getEntriesByType("measure")
+          .filter((entry) => /Create compiler|Build #/.test(entry.name)).length,
+        hasFrameJsxCompiler:
+          typeof (globalThis as { __executorCompileJsx?: unknown }).__executorCompileJsx ===
+          "function",
+      }));
+
+    const srcDocOf = (shellFrame: Frame) =>
+      shellFrame.evaluate(
+        () =>
+          document.querySelector<HTMLIFrameElement>('iframe[title="Generated UI"]')?.srcdoc ?? "",
+      );
+
+    // The fast path's whole claim: the same artifact, styled the same, with no
+    // compiler of either kind in the frame.
+    it("styles the model's classes from the stored CSS with no compiler in the frame", async () => {
+      if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+      const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+      try {
+        const compiled = await precompileArtifact(generatedUtilityProbeCode);
+        expect(compiled.css).not.toBeNull();
+        const innerFrame = await renderGeneratedUi(
+          page,
+          shellFrame,
+          generatedUtilityProbeCode,
+          compiled,
+        );
+        await innerFrame.locator("#probe").waitFor({ timeout: 10_000 });
+
+        const computed = await innerFrame.evaluate(() => {
+          const styleOf = (id: string) => getComputedStyle(document.getElementById(id)!);
+          return {
+            fontSize: styleOf("size").fontSize,
+            gridColumns: styleOf("grid").gridTemplateColumns.split(" ").length,
+            labelSize: styleOf("arbitrary").fontSize,
+            mutedColor: styleOf("token").color,
+            bodyFont: getComputedStyle(document.body).fontFamily,
+          };
+        });
+        expect(computed.fontSize).toBe("24px");
+        expect(computed.gridColumns).toBe(4);
+        expect(computed.labelSize).toBe("11px");
+        expect(computed.mutedColor).toBe("rgb(102, 102, 102)");
+        expect(computed.bodyFont).toContain("Geist");
+
+        expect(await frameState(innerFrame)).toEqual({
+          compilerMeasures: 0,
+          hasFrameJsxCompiler: false,
+        });
+        const srcDoc = await srcDocOf(shellFrame);
+        expect(srcDoc).not.toContain("text/tailwindcss");
+        console.info(`[precompile] fast-path srcdoc length: ${srcDoc.length}`);
+      } finally {
+        await page.close();
+      }
+    }, 30_000);
+
+    it("runs the stored JS, not the source it arrived with", async () => {
+      if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+      const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+      try {
+        const stored = await precompileArtifact(generatedMarkerCode("B"));
+        const innerFrame = await renderGeneratedUi(
+          page,
+          shellFrame,
+          generatedMarkerCode("A"),
+          stored,
+        );
+        await innerFrame.locator("#marker").waitFor({ timeout: 10_000 });
+        expect(await innerFrame.locator("#marker").textContent()).toBe("B");
+      } finally {
+        await page.close();
+      }
+    }, 30_000);
+
+    it("falls back to the runtime path when the fingerprint does not match", async () => {
+      if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+      const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+      try {
+        const stored = await precompileArtifact(generatedMarkerCode("B"));
+        const innerFrame = await renderGeneratedUi(page, shellFrame, generatedMarkerCode("A"), {
+          ...stored,
+          fingerprint: `${ARTIFACT_COMPILE_FINGERPRINT}-stale`,
+        });
+        await innerFrame.locator("#marker").waitFor({ timeout: 10_000 });
+        expect(await innerFrame.locator("#marker").textContent()).toBe("A");
+
+        const state = await frameState(innerFrame);
+        expect(state.hasFrameJsxCompiler).toBe(true);
+        expect(state.compilerMeasures).toBeGreaterThan(0);
+        expect(await srcDocOf(shellFrame)).toContain("text/tailwindcss");
+      } finally {
+        await page.close();
+      }
+    }, 30_000);
+
+    it("keeps the runtime Tailwind compiler when classes are built dynamically", async () => {
+      if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+      const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+      try {
+        const compiled = await precompileArtifact(generatedDynamicClassCode);
+        expect(compiled.js).not.toBeNull();
+        expect(compiled.css).toBeNull();
+        const innerFrame = await renderGeneratedUi(
+          page,
+          shellFrame,
+          generatedDynamicClassCode,
+          compiled,
+        );
+        await innerFrame.locator("#probe").waitFor({ timeout: 10_000 });
+
+        const backgrounds = await innerFrame.evaluate(() => ({
+          dynamic: getComputedStyle(document.getElementById("dynamic")!).backgroundColor,
+          literal: getComputedStyle(document.getElementById("literal")!).backgroundColor,
+        }));
+        expect(backgrounds.dynamic).not.toBe("rgba(0, 0, 0, 0)");
+        expect(backgrounds.dynamic).toBe(backgrounds.literal);
+
+        const state = await frameState(innerFrame);
+        expect(state.compilerMeasures).toBeGreaterThan(0);
+        expect(state.hasFrameJsxCompiler).toBe(false);
+      } finally {
+        await page.close();
+      }
+    }, 30_000);
+
+    // A class the frame's own compiler styles but the extractor did not offer
+    // is an unstyled element on the fast path. Render each fixture the slow
+    // way, and require every class that produced a rule to have been a
+    // candidate or to live in the shell's own stylesheet.
+    for (const [index, code] of generatedCorpusCodes.entries()) {
+      it(`offers the extractor every class that styles at runtime (fixture ${index + 1})`, async () => {
+        if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+        const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+        try {
+          const innerFrame = await renderGeneratedUi(page, shellFrame, code);
+          await innerFrame.locator("#root > *").first().waitFor({ timeout: 10_000 });
+          await innerFrame.waitForTimeout(500);
+
+          const frameSheet = await innerFrame.evaluate(() =>
+            Array.from(document.styleSheets)
+              .flatMap((sheet) => Array.from(sheet.cssRules).map((rule) => rule.cssText))
+              .join("\n"),
+          );
+          const styled = await innerFrame.evaluate((sheet) => {
+            const tokens = new Set<string>();
+            for (const element of document.querySelectorAll("[class]")) {
+              for (const token of element.classList) tokens.add(token);
+            }
+            return [...tokens].filter((token) => sheet.includes(`.${CSS.escape(token)}`));
+          }, frameSheet);
+          expect(styled.length).toBeGreaterThan(0);
+
+          const offered = new Set([...extractCandidates(code), ...shellChromeTokens()]);
+          expect(styled.filter((token) => !offered.has(token))).toEqual([]);
+        } finally {
+          await page.close();
+        }
+      }, 30_000);
+    }
+  });
 
   it("blocks popup, form, and nested-frame escape attempts from generated UI", async () => {
     if (!browser || !hostServer) throw new Error("Browser harness did not start.");

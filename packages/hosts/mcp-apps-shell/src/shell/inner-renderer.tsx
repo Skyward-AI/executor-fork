@@ -2,7 +2,7 @@ import React, { type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { compileJsx, evaluateComponent } from "./component-runtime";
+import { evaluateComponent } from "./component-runtime";
 import * as Components from "./components";
 import { createToolsProxy, type ToolCallRequest } from "./tools-proxy";
 
@@ -26,6 +26,11 @@ type RenderMessage = {
   type: "executor.render";
   token: string;
   code: string;
+  /**
+   * `code` already transformed to plain JS by the server. When present the
+   * frame skips its own transform, and the compiler script is not even loaded.
+   */
+  compiledJs?: unknown;
   theme?: unknown;
   /**
    * Whether the embedding host can store a preview snapshot.
@@ -379,9 +384,18 @@ const captureWhenSettled = () => {
   arm();
 };
 
-const renderGeneratedCode = (code: string) => {
+const compileWithFrameCompiler = (code: string): string => {
+  const compile = (globalThis as { __executorCompileJsx?: (source: string) => string })
+    .__executorCompileJsx;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: the caller renders any throw as the frame's compile error
+  if (typeof compile !== "function")
+    throw new Error("The JSX compiler is not loaded in this frame.");
+  return compile(code);
+};
+
+const renderGeneratedCode = (code: string, compiledJs: unknown) => {
   try {
-    const compiled = compileJsx(code);
+    const compiled = typeof compiledJs === "string" ? compiledJs : compileWithFrameCompiler(code);
     const evalResult = evaluateComponent(compiled, createToolsProxy(requestParentToolCall));
 
     if ("error" in evalResult) {
@@ -437,7 +451,7 @@ window.addEventListener("message", (event: MessageEvent<InboundMessage>) => {
     // A fresh render is a fresh picture: the previous capture, if any, was of
     // different code.
     capturedThisRender = false;
-    renderGeneratedCode(data.code);
+    renderGeneratedCode(data.code, data.compiledJs);
     // Only where the host said it can store one. Everywhere else — every real
     // MCP client — the work is skipped entirely rather than done and dropped.
     if (data.capturePreview === true) captureWhenSettled();
