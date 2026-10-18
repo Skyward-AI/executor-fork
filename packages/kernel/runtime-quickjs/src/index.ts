@@ -35,8 +35,32 @@ export const setQuickJSModule = (mod: QuickJSWASMModule) => {
   preloadedModule = mod;
 };
 
-const resolveQuickJS = (): Promise<QuickJSWASMModule> =>
-  preloadedModule ? Promise.resolve(preloadedModule) : getQuickJS();
+export type QuickJSModuleLoader = () => Promise<QuickJSWASMModule>;
+
+let moduleLoader: QuickJSModuleLoader | null = null;
+let loadingModule: Promise<QuickJSWASMModule> | null = null;
+
+// Register a lazy source for the module (Workers must supply a WASM-inlined
+// variant). The loader first runs on the first resolve, so hosts pay the
+// instantiation cost only when code actually executes.
+export const setQuickJSModuleLoader = (loader: QuickJSModuleLoader) => {
+  moduleLoader = loader;
+  loadingModule = null;
+};
+
+const resolveQuickJS = (): Promise<QuickJSWASMModule> => {
+  if (preloadedModule) return Promise.resolve(preloadedModule);
+  if (!moduleLoader) return getQuickJS();
+  if (!loadingModule) {
+    // oxlint-disable-next-line executor/no-promise-catch -- boundary: this module has no Effect context; reset the memo on failure so the next resolve retries instead of caching a permanent rejection
+    loadingModule = moduleLoader().catch((err: unknown) => {
+      loadingModule = null;
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: rethrow so the caller still observes the original failure
+      throw err;
+    });
+  }
+  return loadingModule;
+};
 
 /**
  * Run a sealed, self-contained bundle in a QuickJS sandbox.
@@ -44,8 +68,8 @@ const resolveQuickJS = (): Promise<QuickJSWASMModule> =>
  * A sibling of `makeQuickJsExecutor` for validation work rather than user
  * execution — no tool bridge, no code recovery, no metering above it. See
  * `sealed-bundle.ts` for why that separation matters. The WASM module is
- * resolved the same way, so a host that called `setQuickJSModule` (Workers must)
- * is honoured here too.
+ * resolved the same way, so a host that called `setQuickJSModule` or
+ * `setQuickJSModuleLoader` (Workers must) is honoured here too.
  */
 export const executeSealedBundle = (
   options: SealedBundleOptions,

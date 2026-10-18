@@ -1,4 +1,4 @@
-import { Effect, Layer, type Context } from "effect";
+import { Effect, Layer } from "effect";
 
 import {
   CodeExecutorProvider,
@@ -32,32 +32,11 @@ import { makeCloudflarePlugins } from "./plugins";
 export { makeExecutionStack } from "@executor-js/api/server";
 export { EngineDecoratorNoop };
 
-type CodeExecutor = Context.Service.Shape<typeof CodeExecutorProvider>;
-
-// QuickJS must have the Workers WASM-inlined variant loaded before it runs
-// (the default variant cannot fetch its .wasm on Workers). Executors are built
-// synchronously, so the load happens on the first `execute`, the async boundary
-// right before code runs. Building the app or serving a request that never
-// executes code does not load QuickJS. The load is memoized per isolate.
-export const withLazyPreload = (
-  executor: CodeExecutor,
-  preload: () => Promise<void>,
-): CodeExecutor => ({
-  ...executor,
-  execute: (code, toolInvoker) =>
-    Effect.promise(preload).pipe(Effect.flatMap(() => executor.execute(code, toolInvoker))),
-});
-
-const preloadQuickJsOnDemand = (): Promise<void> =>
-  import("./quickjs").then((m) => m.preloadQuickJs());
-
 export const CloudflareCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Layer.sync(
   CodeExecutorProvider,
   () => {
     const loader = (env as { LOADER?: WorkerLoader }).LOADER;
-    return loader
-      ? makeDynamicWorkerExecutor({ loader })
-      : withLazyPreload(makeQuickJsExecutor(), preloadQuickJsOnDemand);
+    return loader ? makeDynamicWorkerExecutor({ loader }) : makeQuickJsExecutor();
   },
 );
 

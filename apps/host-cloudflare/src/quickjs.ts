@@ -9,7 +9,7 @@ import baseVariant from "@jitl/quickjs-wasmfile-release-sync";
 // monorepo-root node_modules path — see scripts/vendor-quickjs-wasm.ts.
 import wasmModule from "./quickjs-engine.wasm";
 
-import { setQuickJSModule } from "@executor-js/runtime-quickjs";
+import type { QuickJSWASMModule } from "quickjs-emscripten";
 
 // ---------------------------------------------------------------------------
 // QuickJS-on-Workers WASM loading.
@@ -18,18 +18,10 @@ import { setQuickJSModule } from "@executor-js/runtime-quickjs";
 // build (its `./emscripten-module` export has a `workerd` condition wrangler
 // selects) — that build expects the WASM module to be supplied rather than
 // fetched/compiled at runtime. `newVariant(base, { wasmModule })` hands it the
-// statically-imported, pre-compiled module, and `setQuickJSModule` makes every
-// `makeQuickJsExecutor()` reuse it. Preloaded once per isolate.
+// statically-imported, pre-compiled module. The worker entry registers this
+// through `setQuickJSModuleLoader`, so the runtime builds it on the first
+// execution and reuses it for the rest of the isolate.
 // ---------------------------------------------------------------------------
 
-let preloaded: Promise<void> | null = null;
-
-export const preloadQuickJs = (): Promise<void> => {
-  if (!preloaded) {
-    const variant = newVariant(baseVariant, { wasmModule });
-    preloaded = newQuickJSWASMModuleFromVariant(variant).then((mod) => {
-      setQuickJSModule(mod);
-    });
-  }
-  return preloaded;
-};
+export const loadQuickJs = (): Promise<QuickJSWASMModule> =>
+  newQuickJSWASMModuleFromVariant(newVariant(baseVariant, { wasmModule }));
