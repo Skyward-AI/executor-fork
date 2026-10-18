@@ -15,8 +15,8 @@ import { makeR2BlobStore } from "@executor-js/cloudflare/blob-store";
 
 import { CLOUDFLARE_NAMESPACE, CLOUDFLARE_SCHEMA_VERSION } from "../config";
 import {
-  CLOUDFLARE_D1_COMPATIBILITY_VERSION,
   cloudflareDataMigrationIds,
+  ensureCloudflareD1SchemaCompatibility,
   prepareCloudflareD1Data,
 } from "./data-migrations";
 import { withD1TransientRetry } from "./d1-retry";
@@ -28,6 +28,22 @@ const schemaFingerprint = async (statements: readonly string[]): Promise<string>
   const bytes = new TextEncoder().encode(statements.join("\0"));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
+// Every open in an isolate uses the same fixed options, so the hash is
+// computed once. Hashing the compatibility function's source makes a change to
+// the repair code change the fingerprint without a hand-bumped version.
+let expectedFingerprintCache: Promise<string> | null = null;
+
+const expectedSchemaFingerprint = (
+  options: Parameters<typeof createDrizzleRuntimeSchemaSqlFromTables>[0],
+): Promise<string> => {
+  expectedFingerprintCache ??= schemaFingerprint([
+    ...createDrizzleRuntimeSchemaSqlFromTables(options),
+    `compatibility:${ensureCloudflareD1SchemaCompatibility.toString()}`,
+    `data-migrations:${cloudflareDataMigrationIds.join(",")}`,
+  ]);
+  return expectedFingerprintCache;
 };
 
 const isMissingFingerprintTable = (error: unknown): boolean => {
@@ -109,17 +125,15 @@ export const createD1ExecutorDb = async (
   // exposes one. A generated fingerprint lets every Worker/DO isolate prove the
   // expected generated schema was already prepared with one primary read instead of
   // replaying dozens of idempotent CREATE/ALTER statements on every database
-  // open. The fingerprint also covers the compatibility-check version and the
+  // open. The fingerprint also covers the compatibility-check source and the
   // ordered data-migration ids, so a current database opens with that one read
   // and skips both. The marker is stored only after the ensure, compatibility
   // check, data migrations, and any required post-compatibility ensure succeed.
   // Data migrations keep their own ledger for databases that need them.
-  const expectedFingerprint = await schemaFingerprint([
-    ...createDrizzleRuntimeSchemaSqlFromTables(options),
-    `compatibility:${CLOUDFLARE_D1_COMPATIBILITY_VERSION}`,
-    `data-migrations:${cloudflareDataMigrationIds().join(",")}`,
+  const [expectedFingerprint, preparedFingerprint] = await Promise.all([
+    expectedSchemaFingerprint(options),
+    readPreparedSchemaFingerprint(db),
   ]);
-  const preparedFingerprint = await readPreparedSchemaFingerprint(db);
   const requiresSchemaPreparation = preparedFingerprint !== expectedFingerprint;
   if (requiresSchemaPreparation) {
     await ensureDrizzleRuntimeSchemaFromTables({ run: (query) => drizzleDb.run(query) }, options);
