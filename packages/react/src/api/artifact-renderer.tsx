@@ -29,8 +29,13 @@ import * as React from "react";
 
 /** What the page hands the shell: the stored source, and the live host. */
 export interface ArtifactRendererProps {
-  /** The artifact's stored JSX source. */
-  readonly code: string;
+  /**
+   * The artifact's stored JSX source, or `null` while the row is still being
+   * fetched. The renderer mounts its frame right away so the shell document
+   * downloads and boots in parallel with the row, and delivers the source once
+   * it arrives.
+   */
+  readonly code: string | null;
   /**
    * The server's precompile of `code` (JS and Tailwind CSS), when the host has
    * one. The shell trusts it only if its fingerprint matches the shell's own
@@ -78,9 +83,6 @@ export type ArtifactRenderer = React.ComponentType<ArtifactRendererProps>;
  */
 export type ArtifactRendererLoader = () => Promise<{
   readonly default: ArtifactRenderer;
-  /** URL of the document the renderer loads into its frame. When present,
-   *  preloading prefetches it alongside the chunk. */
-  readonly shellHtmlUrl?: string;
 }>;
 
 const ArtifactRendererContext = React.createContext<ArtifactRendererLoader | null>(null);
@@ -141,23 +143,6 @@ export function useArtifactRenderer(): ArtifactRenderer | null {
 const preloaded = new WeakSet<ArtifactRendererLoader>();
 
 /**
- * Shell document URLs already hinted. The document is several megabytes and the
- * iframe only mounts after the artifact row arrives, so the hint lets the two
- * fetches overlap. One `<link>` per URL for the life of the page.
- */
-const prefetchedDocuments = new Set<string>();
-
-function prefetchDocument(url: string): void {
-  if (typeof document === "undefined" || prefetchedDocuments.has(url)) return;
-  prefetchedDocuments.add(url);
-  const link = document.createElement("link");
-  link.rel = "prefetch";
-  link.as = "document";
-  link.href = url;
-  document.head.appendChild(link);
-}
-
-/**
  * Start fetching the renderer chunk before anything needs to render it.
  *
  * ## What this removes
@@ -185,9 +170,7 @@ export function preloadArtifactRenderer(loader: ArtifactRendererLoader | null): 
   if (!loader || preloaded.has(loader)) return;
   preloaded.add(loader);
   void loader().then(
-    (renderer) => {
-      if (renderer.shellHtmlUrl) prefetchDocument(renderer.shellHtmlUrl);
-    },
+    () => undefined,
     () => {
       // Let a failed speculative fetch be tried again for real. Without this a
       // transient network blip during the preload would mark the loader done
