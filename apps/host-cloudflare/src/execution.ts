@@ -10,6 +10,7 @@ import {
   PluginsProvider,
   type ExecutorDbHandle,
 } from "@executor-js/api/server";
+import { ARTIFACT_COMPILE_FINGERPRINT } from "@executor-js/mcp-apps-shell/compile-fingerprint";
 import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { env } from "cloudflare:workers";
@@ -62,6 +63,15 @@ export const makeCloudflareHostConfig = (config: CloudflareConfig): Layer.Layer<
     // memory. Rebuild stale catalogs one at a time so many of them cannot take
     // the session down together.
     toolsSyncConcurrency: 1,
+    // Tailwind and Sucrase load on the first save or render read, not at
+    // Worker startup.
+    artifactCompiler: {
+      fingerprint: ARTIFACT_COMPILE_FINGERPRINT,
+      compile: (code) =>
+        Effect.promise(() =>
+          import("@executor-js/mcp-apps-shell/precompile").then((m) => m.precompileArtifact(code)),
+        ),
+    },
     // Absent unless both gateway ids are set, which leaves search lexical.
     ...(config.jevGateway === undefined ? {} : { jevGateway: config.jevGateway }),
   });

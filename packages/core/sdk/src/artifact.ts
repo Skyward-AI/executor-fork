@@ -9,9 +9,9 @@
 // policy, so org-tier sharing later needs no new machinery.
 // ---------------------------------------------------------------------------
 
-import { Option, Schema } from "effect";
+import { Option, Schema, type Effect } from "effect";
 
-import type { ArtifactRow, ArtifactSummaryRow } from "./core-schema";
+import type { ArtifactFullRow, ArtifactRow, ArtifactSummaryRow } from "./core-schema";
 import { ArtifactId, ConnectionName, IntegrationSlug, Owner } from "./ids";
 
 /**
@@ -136,6 +136,52 @@ export interface Artifact {
   readonly updatedAt: Date;
 }
 
+/**
+ * The result of precompiling an artifact's source, as stored on its row.
+ *
+ * `fingerprint` names the compiler that produced it; output whose fingerprint
+ * differs from the host's current one is stale and is recomputed on the next
+ * render read. `js` is the JSX transformed to plain JS and `css` the Tailwind
+ * CSS for the classes the source uses. Each is `null` when the compiler could
+ * not produce it, and the renderer then does that step itself: no `js` means
+ * the frame compiles the source, no `css` means the frame runs Tailwind.
+ */
+export interface ArtifactCompiledOutput {
+  readonly fingerprint: string;
+  readonly js: string | null;
+  readonly css: string | null;
+}
+
+/**
+ * A host-supplied precompiler for artifact source (`ExecutorConfig.artifactCompiler`).
+ *
+ * Optional: a host without one stores no compiled output and every render
+ * compiles in the frame, exactly as before. It must not fail; a failure is
+ * logged and the artifact is saved without compiled output.
+ */
+export interface ArtifactCompiler {
+  readonly fingerprint: string;
+  readonly compile: (code: string) => Effect.Effect<ArtifactCompiledOutput>;
+}
+
+/** An artifact plus its precompiled output, for the renderer. `null` when no
+ *  compiler is configured on this host. */
+export interface ArtifactForRender extends Artifact {
+  readonly compiled: ArtifactCompiledOutput | null;
+}
+
+/** The compiled output stored on a row, or `null` when it was never compiled. */
+export const compiledFromRow = (
+  row: Pick<ArtifactRow, "compiled_fingerprint" | "compiled_js" | "compiled_css">,
+): ArtifactCompiledOutput | null =>
+  typeof row.compiled_fingerprint === "string"
+    ? {
+        fingerprint: row.compiled_fingerprint,
+        js: row.compiled_js ?? null,
+        css: row.compiled_css ?? null,
+      }
+    : null;
+
 /** What a list returns: everything except the source and the bindings that
  *  interpret it. Both are only meaningful to a renderer, and both are heavy.
  *  The preview stays, because the list is what draws it. */
@@ -204,7 +250,7 @@ export const rowToArtifactSummary = (row: ArtifactSummaryRow): ArtifactSummary =
   updatedAt: asDate(row.updated_at),
 });
 
-export const rowToArtifact = (row: ArtifactRow): Artifact => ({
+export const rowToArtifact = (row: ArtifactFullRow): Artifact => ({
   ...rowToArtifactSummary(row),
   code: row.code,
   bindings: bindingsFromColumn(row.bindings),

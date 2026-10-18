@@ -52,6 +52,7 @@ import {
 } from "./health-check";
 import type { HealthCheckCandidate } from "./health-check";
 import {
+  ARTIFACT_FULL_COLUMNS,
   ARTIFACT_SUMMARY_COLUMNS,
   coreSchema,
   isToolPolicyAction,
@@ -87,9 +88,13 @@ import {
 
 export type { OnElicitation, InvokeOptions } from "./elicitation";
 import {
+  compiledFromRow,
   rowToArtifact,
   rowToArtifactSummary,
   type Artifact,
+  type ArtifactCompiledOutput,
+  type ArtifactCompiler,
+  type ArtifactForRender,
   type ArtifactSummary,
   type RemoveArtifactInput,
   type RenameArtifactInput,
@@ -509,6 +514,16 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     /** Newest first, without the JSX source — lists stay light. */
     readonly list: () => Effect.Effect<readonly ArtifactSummary[], StorageFailure>;
     readonly get: (id: string) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
+    /**
+     * `get` plus the precompiled output, for a renderer. Output stored under an
+     * older compiler fingerprint is recomputed and written back first, so
+     * artifacts saved before a compiler existed are compiled lazily here.
+     * `compiled` is `null` when the host has no `artifactCompiler`. Prefer
+     * `get` anywhere the compiled columns are not needed: they are large.
+     */
+    readonly getForRender: (
+      id: string,
+    ) => Effect.Effect<ArtifactForRender, ArtifactNotFoundError | StorageFailure>;
     /** Create, or overwrite an existing artifact in place when `id` is given. */
     readonly save: (
       input: SaveArtifactInput,
@@ -763,6 +778,12 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * what every host did before this seam existed.
    */
   readonly enterpriseManagedRollout?: EnterpriseManagedRollout;
+  /**
+   * Precompiles artifact source at save time (JSX to JS, and the Tailwind CSS
+   * its classes need) so the render frame can skip both. Omitted -> nothing is
+   * precompiled and every render compiles in the frame, as before.
+   */
+  readonly artifactCompiler?: ArtifactCompiler;
   /**
    * Host-operated OAuth apps (the deployment's own registered GitHub/Google/…
    * apps), addressed as `first-party:<name>`. Users connect through them with
@@ -6713,9 +6734,64 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       Effect.gen(function* () {
         const row = yield* core.findFirst("artifact", {
           where: artifactById(id),
+          select: ARTIFACT_FULL_COLUMNS,
         });
         if (!row) return yield* new ArtifactNotFoundError({ id: ArtifactId.make(id) });
         return rowToArtifact(row);
+      });
+
+    const compiledColumns = (compiled: ArtifactCompiledOutput | null) => ({
+      compiled_fingerprint: compiled?.fingerprint ?? null,
+      compiled_js: compiled?.js ?? null,
+      compiled_css: compiled?.css ?? null,
+    });
+
+    // Fail-open: a compiler problem must never refuse a save or a render.
+    // Without compiled output the frame compiles the source itself.
+    const compileArtifactSource = (code: string): Effect.Effect<ArtifactCompiledOutput | null> => {
+      const compiler = config.artifactCompiler;
+      if (!compiler) return Effect.succeed(null);
+      return compiler.compile(code).pipe(
+        Effect.map((output): ArtifactCompiledOutput | null => output),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("executor artifact precompile failed", cause).pipe(Effect.as(null)),
+        ),
+      );
+    };
+
+    const artifactsGetForRender = (
+      id: string,
+    ): Effect.Effect<ArtifactForRender, ArtifactNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const row = yield* core.findFirst("artifact", { where: artifactById(id) });
+        if (!row) return yield* new ArtifactNotFoundError({ id: ArtifactId.make(id) });
+        const artifact = rowToArtifact(row);
+        const compiler = config.artifactCompiler;
+        if (!compiler) return { ...artifact, compiled: null };
+
+        const stored = compiledFromRow(row);
+        if (stored !== null && stored.fingerprint === compiler.fingerprint) {
+          return { ...artifact, compiled: stored };
+        }
+
+        const fresh = yield* compileArtifactSource(row.code);
+        if (fresh === null) return { ...artifact, compiled: null };
+        // Guarded on the source this compiled, so a save that lands meanwhile
+        // always wins: the write simply matches no row. `updated_at` is no
+        // guard here, since SQLite stores it at one-second resolution. No
+        // column other than the compiled ones moves, because being rendered is
+        // not an edit.
+        yield* core
+          .updateMany("artifact", {
+            where: (b: AnyCb) => b.and(b("id", "=", id), b("code", "=", row.code)),
+            set: compiledColumns(fresh),
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("executor artifact compiled output write-back failed", cause),
+            ),
+          );
+        return { ...artifact, compiled: fresh };
       });
 
     const artifactsSave = (
@@ -6729,7 +6805,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // would let a stale client resurrect a deleted artifact silently.
         if (input.id !== undefined) {
           const where = artifactById(input.id);
-          const existing = yield* core.findFirst("artifact", { where });
+          const existing = yield* core.findFirst("artifact", {
+            where,
+            select: ARTIFACT_FULL_COLUMNS,
+          });
           if (!existing) {
             return yield* new ArtifactNotFoundError({
               id: ArtifactId.make(input.id),
@@ -6748,6 +6827,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             code: input.code,
             bindings: input.bindings ?? null,
             preview: input.preview ?? null,
+            // Compiled output is a function of `code`, so it is replaced with
+            // it, and cleared when there is no compiler: stale output under new
+            // source would render the previous version.
+            ...compiledColumns(yield* compileArtifactSource(input.code)),
             updated_at: now,
           };
           yield* core.updateMany("artifact", { where, set });
@@ -6768,6 +6851,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           code: input.code,
           bindings: input.bindings ?? null,
           preview: input.preview ?? null,
+          ...compiledColumns(yield* compileArtifactSource(input.code)),
           created_at: now,
           updated_at: now,
         });
@@ -6803,7 +6887,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const where = artifactById(input.id);
-        const existing = yield* core.findFirst("artifact", { where });
+        const existing = yield* core.findFirst("artifact", {
+          where,
+          select: ARTIFACT_FULL_COLUMNS,
+        });
         if (!existing) {
           return yield* new ArtifactNotFoundError({
             id: ArtifactId.make(input.id),
@@ -7804,6 +7891,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       artifacts: {
         list: artifactsList,
         get: artifactsGet,
+        getForRender: artifactsGetForRender,
         save: artifactsSave,
         rename: artifactsRename,
         remove: artifactsRemove,

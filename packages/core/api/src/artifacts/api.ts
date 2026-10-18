@@ -47,9 +47,18 @@ const ArtifactSummaryResponse = Schema.Struct({
   updatedAt: Schema.Number,
 });
 
+/** The server-side precompile of `code`. Only `get` carries it, and only when
+ *  the host has a compiler. A null half means the frame does that step itself. */
+const ArtifactCompiledResponse = Schema.Struct({
+  fingerprint: Schema.String,
+  js: Schema.NullOr(Schema.String),
+  css: Schema.NullOr(Schema.String),
+});
+
 const ArtifactResponse = Schema.Struct({
   ...ArtifactSummaryResponse.fields,
   code: Schema.String,
+  compiled: Schema.optional(Schema.NullOr(ArtifactCompiledResponse)),
   /** Null for artifacts saved before the binding contract, whose code still
    *  carries full connection addresses. */
   bindings: Schema.NullOr(ArtifactBindings),

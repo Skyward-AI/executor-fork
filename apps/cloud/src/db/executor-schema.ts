@@ -242,6 +242,9 @@ export const artifact = pgTable(
     code: text("code").notNull(),
     bindings: json("bindings"),
     preview: text("preview"),
+    compiled_fingerprint: text("compiled_fingerprint"),
+    compiled_js: text("compiled_js"),
+    compiled_css: text("compiled_css"),
     created_at: timestamp("created_at").notNull(),
     updated_at: timestamp("updated_at").notNull(),
     row_id: varchar("row_id", { length: 255 })
