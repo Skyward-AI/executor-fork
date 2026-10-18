@@ -63,7 +63,12 @@ export type ArtifactRenderer = React.ComponentType<ArtifactRendererProps>;
  * Resolves the renderer on demand, in the browser only. Apps pass a dynamic
  * `import()`; the module is never touched during SSR.
  */
-export type ArtifactRendererLoader = () => Promise<{ readonly default: ArtifactRenderer }>;
+export type ArtifactRendererLoader = () => Promise<{
+  readonly default: ArtifactRenderer;
+  /** URL of the document the renderer loads into its frame. When present,
+   *  preloading prefetches it alongside the chunk. */
+  readonly shellHtmlUrl?: string;
+}>;
 
 const ArtifactRendererContext = React.createContext<ArtifactRendererLoader | null>(null);
 
@@ -123,6 +128,23 @@ export function useArtifactRenderer(): ArtifactRenderer | null {
 const preloaded = new WeakSet<ArtifactRendererLoader>();
 
 /**
+ * Shell document URLs already hinted. The document is several megabytes and the
+ * iframe only mounts after the artifact row arrives, so the hint lets the two
+ * fetches overlap. One `<link>` per URL for the life of the page.
+ */
+const prefetchedDocuments = new Set<string>();
+
+function prefetchDocument(url: string): void {
+  if (typeof document === "undefined" || prefetchedDocuments.has(url)) return;
+  prefetchedDocuments.add(url);
+  const link = document.createElement("link");
+  link.rel = "prefetch";
+  link.as = "document";
+  link.href = url;
+  document.head.appendChild(link);
+}
+
+/**
  * Start fetching the renderer chunk before anything needs to render it.
  *
  * ## What this removes
@@ -150,7 +172,9 @@ export function preloadArtifactRenderer(loader: ArtifactRendererLoader | null): 
   if (!loader || preloaded.has(loader)) return;
   preloaded.add(loader);
   void loader().then(
-    () => undefined,
+    (renderer) => {
+      if (renderer.shellHtmlUrl) prefetchDocument(renderer.shellHtmlUrl);
+    },
     () => {
       // Let a failed speculative fetch be tried again for real. Without this a
       // transient network blip during the preload would mark the loader done
