@@ -228,6 +228,10 @@ const copyProviderServiceSplitBlobsToR2 = (
       }),
   });
 
+// Bump when `ensureCloudflareD1SchemaCompatibility` gains a repair step, so
+// databases stamped by the previous logic run it once more.
+export const CLOUDFLARE_D1_COMPATIBILITY_VERSION = 1;
+
 const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly SqliteDataMigration[] => [
   {
     name: googleOpenApiOwnershipDataMigration.name,
@@ -255,6 +259,12 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
   // caller's partition instead of the owner embedded in the item id (#1453).
   encryptedSecretsRepartitionDataMigration,
 ];
+
+// Ordered ids of every data migration this build knows. The ledger already
+// makes a migration run once, and the bucket only decides how it copies blobs,
+// so the ids alone describe what a fully prepared database looks like.
+export const cloudflareDataMigrationIds = (): readonly string[] =>
+  cloudflareDataMigrations(undefined).map((migration) => migration.name);
 
 export const prepareCloudflareD1Data = (
   db: D1Database,

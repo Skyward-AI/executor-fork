@@ -5,6 +5,7 @@ import { collectTables, type SqliteDataMigrationClient } from "@executor-js/sdk"
 import { createSqliteTestFumaDb } from "@executor-js/sdk/testing";
 
 import { createD1ExecutorDb } from "./d1";
+import { cloudflareDataMigrationIds } from "./data-migrations";
 
 const makeRecordingD1 = (
   client: SqliteDataMigrationClient,
@@ -79,9 +80,53 @@ describe("createD1ExecutorDb", () => {
     const secondStatements = statements.slice(secondStart);
 
     expect(secondStatements.filter(isRuntimeSchemaStatement)).toEqual([]);
-    expect(secondStatements.some((sql) => sql.includes("SELECT name FROM data_migration"))).toBe(
-      true,
+
+    await sqlite.close();
+  });
+
+  it("opens a current database with exactly one D1 query", async () => {
+    const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
+    const { db, statements } = makeRecordingD1(sqlite.client);
+    const first = await createD1ExecutorDb(db, undefined);
+    await first.close();
+
+    const secondStart = statements.length;
+    const second = await createD1ExecutorDb(db, undefined);
+    await second.close();
+
+    const secondStatements = statements.slice(secondStart);
+    expect(secondStatements).toHaveLength(1);
+    expect(secondStatements[0]).toContain("SELECT fingerprint");
+
+    await sqlite.close();
+  });
+
+  it("runs the data migrations again when the stored fingerprint predates the migration list", async () => {
+    const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
+    const { db, statements } = makeRecordingD1(sqlite.client);
+    const first = await createD1ExecutorDb(db, undefined);
+    await first.close();
+    const ids = cloudflareDataMigrationIds();
+    const missing = ids[ids.length - 1];
+    await sqlite.client.execute({
+      sql: "DELETE FROM data_migration WHERE name = ?",
+      args: [missing],
+    });
+    await sqlite.client.execute(
+      `UPDATE private_executor_cloudflare_schema_fingerprint
+       SET fingerprint = 'older'
+       WHERE id = 'runtime-schema'`,
     );
+
+    const secondStart = statements.length;
+    const second = await createD1ExecutorDb(db, undefined);
+    await second.close();
+
+    expect(
+      statements.slice(secondStart).some((sql) => sql.includes("SELECT name FROM data_migration")),
+    ).toBe(true);
+    const ledger = await sqlite.client.execute(`SELECT name FROM data_migration`);
+    expect(ledger.rows.map((row) => row.name)).toContain(missing);
 
     await sqlite.close();
   });
