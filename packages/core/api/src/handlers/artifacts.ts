@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import {
   sanitizeArtifactPreviewMarkup,
   type Artifact,
+  type ArtifactForRender,
   type ArtifactSummary,
 } from "@executor-js/sdk";
 
@@ -34,6 +35,11 @@ const artifactToResponse = (a: Artifact) => ({
   bindings: a.bindings,
 });
 
+const artifactForRenderToResponse = (a: ArtifactForRender) => ({
+  ...artifactToResponse(a),
+  compiled: a.compiled,
+});
+
 export const ArtifactsHandlers = HttpApiBuilder.group(ExecutorApi, "artifacts", (handlers) =>
   handlers
     .handle("list", () =>
@@ -49,9 +55,9 @@ export const ArtifactsHandlers = HttpApiBuilder.group(ExecutorApi, "artifacts", 
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          const artifact = yield* executor.artifacts.get(path.artifactId);
+          const artifact = yield* executor.artifacts.getForRender(path.artifactId);
           yield* notifyArtifactUsage("viewed");
-          return artifactToResponse(artifact);
+          return artifactForRenderToResponse(artifact);
         }),
       ),
     )

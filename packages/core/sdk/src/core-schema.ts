@@ -426,6 +426,15 @@ export const coreTables = defineTables({
       // column existed have none, and so does one whose render was too large,
       // failed open, or has never been opened.
       preview: nullableTextColumn("preview"),
+      // The server-side precompile of `code`: the fingerprint of the compiler
+      // that produced it, the JSX transformed to plain JS, and the Tailwind
+      // CSS for the classes the source uses. All nullable: never compiled, a
+      // host without a compiler, source over the size cap, or classes only
+      // known at runtime (`css` alone). Only `getForRender` reads them, so the
+      // per-tool-call `get` stays light. See `ArtifactCompiler`.
+      compiled_fingerprint: nullableTextColumn("compiled_fingerprint"),
+      compiled_js: nullableTextColumn("compiled_js"),
+      compiled_css: nullableTextColumn("compiled_css"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },
@@ -506,6 +515,18 @@ export const ARTIFACT_SUMMARY_COLUMNS = [
   "created_at",
   "updated_at",
 ] as const satisfies readonly (keyof ArtifactRow)[];
+/**
+ * Everything except the compiled output, which can be twice the size of `code`.
+ * `artifacts.get` runs on every tool call an artifact makes, so only
+ * `getForRender` selects the compiled columns.
+ */
+export const ARTIFACT_FULL_COLUMNS = [
+  ...ARTIFACT_SUMMARY_COLUMNS,
+  "code",
+  "bindings",
+] as const satisfies readonly (keyof ArtifactRow)[];
+/** The artifact-row projection {@link ARTIFACT_FULL_COLUMNS} selects. */
+export type ArtifactFullRow = Pick<ArtifactRow, (typeof ARTIFACT_FULL_COLUMNS)[number]>;
 /** The artifact-row projection {@link ARTIFACT_SUMMARY_COLUMNS} selects. */
 export type ArtifactSummaryRow = Pick<ArtifactRow, (typeof ARTIFACT_SUMMARY_COLUMNS)[number]>;
 export type PluginStorageRow = FumaRow<CoreSchema["plugin_storage"]>;
