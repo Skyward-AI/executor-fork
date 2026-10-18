@@ -75,8 +75,9 @@ const DEFAULT_MAX_STACK_SIZE_BYTES = 2 * 1024 * 1024;
 const BUNDLE_FILENAME = "executor-sealed-bundle.js";
 const CALL_FILENAME = "executor-sealed-call.js";
 
-/** Set by `setQuickJSModule` in this package's main entry. Read lazily so a
- *  host that preloads a custom WASM module (Workers must) is honoured. */
+/** Supplied by this package's main entry (`setQuickJSModule` or
+ *  `setQuickJSModuleLoader`). Read lazily so a host that provides a custom WASM
+ *  module (Workers must) is honoured. */
 type ModuleResolver = () => Promise<QuickJSWASMModule>;
 
 const errorMessage = (cause: unknown): string =>

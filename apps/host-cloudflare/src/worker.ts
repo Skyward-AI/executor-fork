@@ -1,5 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
+import { setQuickJSModuleLoader } from "@executor-js/runtime-quickjs";
+
 import { makeCloudflareApp, reconcileInternalIntegrationsOnce } from "./app";
 import {
   cloudflareAccessConfigErrorMessage,
@@ -8,6 +10,12 @@ import {
   type CloudflareEnv,
 } from "./config";
 import { mcpResourceFromPath } from "./mcp/resource";
+
+// Workers cannot fetch the default QuickJS .wasm, so every QuickJS user in this
+// script (the fetch handlers and the MCP Durable Objects) resolves the
+// WASM-inlined variant through this loader. The import stays dynamic so the
+// engine is not instantiated or evaluated at startup.
+setQuickJSModuleLoader(() => import("./quickjs").then((m) => m.loadQuickJs()));
 
 // The MCP Durable Object classes, bound in wrangler.jsonc. They must be exported
 // at the Worker entry module scope for the runtime to find them.
