@@ -6,6 +6,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
+import { MCP_APPS_SHELL_STABLE_ASSET_PATH } from "@executor-js/mcp-apps-shell/shell-asset-path";
 import { innerRendererPlugin, mcpAppsShellAsset } from "@executor-js/mcp-apps-shell/vite";
 
 import { routes } from "./tsr.routes";
@@ -32,6 +33,30 @@ const EXECUTOR_VERSION = cliPackage.version;
 // on Cloudflare you run `wrangler dev`, which serves the built SPA + the Worker
 // API together.
 // ---------------------------------------------------------------------------
+
+// Workers Static Assets reads `_headers` from the assets directory. Emitted here
+// rather than into the shared `publicDir` so only this host gets it. Everything
+// under /assets is content-hashed and safe to cache forever, except the
+// stable-named shell copy the MCP session reads, which must keep revalidating.
+const immutableAssetHeaders = (): Plugin => ({
+  name: "executor-host-cloudflare-headers",
+  apply: "build",
+  generateBundle() {
+    this.emitFile({
+      type: "asset",
+      fileName: "_headers",
+      source: [
+        "/assets/*",
+        "  Cache-Control: public, max-age=31536000, immutable",
+        "",
+        MCP_APPS_SHELL_STABLE_ASSET_PATH,
+        "  ! Cache-Control",
+        "  Cache-Control: public, max-age=0, must-revalidate",
+        "",
+      ].join("\n"),
+    });
+  },
+});
 
 const APP_ROOT = fileURLToPath(new URL("../../packages/app/", import.meta.url));
 
@@ -67,6 +92,7 @@ export default defineConfig({
     // sandboxed inner frame from `virtual:executor-inner-renderer`.
     mcpAppsShellAsset() as Plugin,
     innerRendererPlugin(),
+    immutableAssetHeaders(),
     executorVitePlugin({
       configPath: fileURLToPath(new URL("./executor.config.ts", import.meta.url)),
     }),

@@ -12,6 +12,10 @@
       "types": "./src/shell-html.ts",
       "default": "./src/shell-html.ts"
     },
+    "./shell-asset-path": {
+      "types": "./src/shell-asset-path.ts",
+      "default": "./src/shell-asset-path.ts"
+    },
     "./worker": {
       "types": "./src/worker.ts",
       "default": "./src/worker.ts"
