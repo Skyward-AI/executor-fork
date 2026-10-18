@@ -30,7 +30,6 @@ import type { ResumeResponse } from "@executor-js/execution";
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "../config";
 import { createD1ExecutorDb } from "../db/d1";
 import { makeCloudflareExecutionStackLayer, makeExecutionStack } from "../execution";
-import { preloadQuickJs } from "../quickjs";
 
 // ---------------------------------------------------------------------------
 // Cloudflare (self-host) MCP Session Durable Object — the host-cloudflare
@@ -146,9 +145,6 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
     const config = this.cfConfig;
     const self = this;
     return Effect.gen(function* () {
-      // QuickJS-WASM must be loaded before the executor layer builds it (the
-      // default variant can't fetch its .wasm on Workers). Idempotent per isolate.
-      yield* Effect.promise(() => preloadQuickJs());
       const { engine, executor } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,

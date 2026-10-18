@@ -26,7 +26,6 @@ import { ErrorCaptureLive } from "./observability";
 import { cloudflareAccountMiddleware } from "./account/account-provider";
 import { makeCloudflareApprovalHandler } from "./mcp";
 import { makeCloudflareMcpAgentHandler } from "./mcp/agent-handler";
-import { preloadQuickJs } from "./quickjs";
 
 // ===========================================================================
 // The Cloudflare host, as ONE `ExecutorApp.make` call: the 4th app alongside
@@ -67,7 +66,6 @@ export const reconcileInternalIntegrationsOnce = (env: CloudflareEnv): Promise<v
       const config = loadConfig(env);
       const accountId = internalPrincipal(config, { subject: null, email: null })?.accountId;
       if (config.internalIntegrations.length === 0 || accountId === undefined) return;
-      yield* Effect.promise(() => preloadQuickJs());
       const handle = yield* Effect.promise(() => openDb(env));
       const executor = yield* makeScopedExecutor<CloudflarePlugins>(
         accountId,
@@ -93,10 +91,6 @@ export const makeCloudflareApp = async (
   config: CloudflareConfig = loadConfig(env),
 ) => {
   const plugins = makeCloudflarePlugins(config.secretKey);
-
-  // Load the Workers-compatible (WASM-inlined) QuickJS variant before any
-  // executor is built, the default variant cannot fetch its .wasm on Workers.
-  await preloadQuickJs();
 
   // Open and idempotently bring up the D1 schema once. This is the long-lived
   // handle the per-request scoped executor reads through the DbProvider seam.
