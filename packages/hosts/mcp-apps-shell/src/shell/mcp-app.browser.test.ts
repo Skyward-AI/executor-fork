@@ -75,6 +75,7 @@ type HostState = {
 type BrowserHostWindow = Window & {
   __mcpHostState: HostState;
   __sendGeneratedUi: (code: string, artifactId: string) => void;
+  __sendDataResult: (structuredContent: Record<string, unknown>) => void;
   __setHostContext: (context: Record<string, unknown>) => void;
 };
 
@@ -804,6 +805,18 @@ const createHostHtml = (shellUrl: string) => `<!doctype html>
           params: {
             content: [{ type: "text", text: "" }],
             structuredContent: { code, artifactId },
+          },
+        });
+      };
+
+      // A tool result with no generated UI: the shell shows it as a data view.
+      window.__sendDataResult = (structuredContent) => {
+        sendToApp({
+          jsonrpc: "2.0",
+          method: "ui/notifications/tool-result",
+          params: {
+            content: [{ type: "text", text: "" }],
+            structuredContent,
           },
         });
       };
@@ -1767,6 +1780,43 @@ describe("MCP app generated UI browser isolation", () => {
       expect(computed.mutedColor, "muted-foreground is executor's gray").toBe("rgb(102, 102, 102)");
       expect(computed.bodyFont, "the frame is set in Geist").toContain("Geist");
       expect(computed.bodyNumeric, "numbers are tabular by default").toContain("tabular-nums");
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("runs no Tailwind compiler in the shell document", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      await renderGeneratedUi(page, shellFrame, 'function App() { return <div id="probe" />; }');
+
+      const shellCompilerMeasures = await shellFrame.evaluate(() =>
+        performance
+          .getEntriesByType("measure")
+          .filter((entry) => entry.name.startsWith("Create compiler"))
+          .map((entry) => entry.name),
+      );
+      expect(shellCompilerMeasures, "only the generated frame compiles Tailwind").toEqual([]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("sets shell chrome monospace text in Geist Mono", async () => {
+    if (!browser || !hostServer) throw new Error("Browser harness did not start.");
+    const { page, shellFrame } = await openHarness(browser, hostServer.url);
+
+    try {
+      await page.evaluate(() =>
+        (window as unknown as BrowserHostWindow).__sendDataResult({ answer: 42 }),
+      );
+      const pre = shellFrame.locator("pre");
+      await pre.waitFor({ timeout: 10_000 });
+
+      const fontFamily = await pre.evaluate((element) => getComputedStyle(element).fontFamily);
+      expect(fontFamily, "font-mono resolves to the design system's mono").toContain("Geist Mono");
     } finally {
       await page.close();
     }

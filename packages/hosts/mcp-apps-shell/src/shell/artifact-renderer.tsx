@@ -40,11 +40,10 @@ import { FILL_DISPLAY_MODE, INLINE_DISPLAY_MODE } from "./display-mode";
  * That is not architectural purity for its own sake; mounting `McpAppsShell`
  * inline was actively broken:
  *
- *   - It imports `@tailwindcss/browser` and its own `globals.css` at IMPORT
- *     scope, and it themes by toggling `document.documentElement`. Inline, all
- *     of that landed on the CONSOLE document — the shell's palette (a teal
- *     `--primary`) overwrote the console's strictly-grayscale tokens for the
- *     rest of the session, and its runtime Tailwind JIT kept mutating the page.
+ *   - It imports its own `globals.css` at IMPORT scope, and it themes by
+ *     toggling `document.documentElement`. Inline, all of that landed on the
+ *     CONSOLE document — the shell's palette (a teal `--primary`) overwrote the
+ *     console's strictly-grayscale tokens for the rest of the session.
  *   - Its inner renderer reports content height over the MCP-Apps resize
  *     protocol, which expects a host frame to consume it. With no host, nothing
  *     did, so tall artifacts clipped mid-viewport.

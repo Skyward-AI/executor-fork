@@ -5,7 +5,6 @@
 // a consumer's tsconfig `include` covers only its own sources.
 /// <reference path="./inner-renderer-source.d.ts" />
 import "./globals.css";
-import "@tailwindcss/browser";
 
 import React, { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps";
