@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { makeCloudflareApp } from "./app";
+import { makeCloudflareApp, reconcileInternalIntegrationsOnce } from "./app";
 import {
   cloudflareAccessConfigErrorMessage,
   loadConfig,
@@ -94,4 +94,11 @@ export class ExecutorInternal extends WorkerEntrypoint<CloudflareEnv> {
 export default {
   fetch: (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> =>
     serveRequest(request, env, ctx, resolvePublic),
+  scheduled: (
+    _controller: ScheduledController,
+    env: CloudflareEnv,
+    ctx: ExecutionContext,
+  ): void => {
+    ctx.waitUntil(reconcileInternalIntegrationsOnce(env));
+  },
 };

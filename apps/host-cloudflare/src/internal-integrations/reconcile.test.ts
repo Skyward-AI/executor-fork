@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Schema } from "effect";
+import { Deferred, Effect, Option, Schema } from "effect";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
 import { createExecutor, IntegrationSlug } from "@executor-js/sdk";
@@ -265,6 +265,43 @@ describe("reconcileInternalIntegrations", () => {
         expect(outcome).toEqual([["fixture", "skipped"]]);
         expect(binding.methods).toEqual([]);
         expect(data.size).toBe(0);
+      }),
+    ),
+  );
+});
+
+describe("reconcileInternalIntegrations concurrency", () => {
+  it.live("starts every entry before any of them is released", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const binding = makeBinding();
+        const { executor } = yield* makeExecutor(binding);
+        const entries = ["alpha", "beta", "gamma"].map(
+          (slug): InternalIntegration => ({
+            ...FIXTURE,
+            slug,
+            name: slug,
+            endpoint: `https://tools.internal/mcp/${slug}`,
+          }),
+        );
+        const gate = yield* Deferred.make<void>();
+        const started: string[] = [];
+        const listTools = (endpoint: string) =>
+          Effect.gen(function* () {
+            started.push(endpoint);
+            if (started.length === entries.length) yield* Deferred.succeed(gate, undefined);
+            yield* Deferred.await(gate);
+            return [] as ReadonlyArray<ListedTool>;
+          });
+
+        const outcome = yield* reconcileInternalIntegrations(executor, entries, { listTools });
+
+        expect(started.sort()).toEqual([
+          "https://tools.internal/mcp/alpha",
+          "https://tools.internal/mcp/beta",
+          "https://tools.internal/mcp/gamma",
+        ]);
+        expect(outcome.map(([slug]) => slug)).toEqual(["alpha", "beta", "gamma"]);
       }),
     ),
   );
