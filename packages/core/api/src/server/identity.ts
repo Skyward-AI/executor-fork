@@ -48,6 +48,10 @@ interface PrincipalBase {
   readonly name: string | null;
   readonly avatarUrl: string | null;
   readonly roles: readonly string[];
+  /** How this identity reached the executor, as the host decided from
+   *  server-side facts: `direct` is a person's own client, `service` is
+   *  everything else. Absent is treated as `service`. */
+  readonly origin?: "direct" | "service";
 }
 
 /**

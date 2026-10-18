@@ -63,6 +63,7 @@ export const principalFromAccessClaims = (
     name: typeof nameClaim === "string" ? nameClaim : commonName || null,
     avatarUrl: null,
     roles: isAdmin ? ["admin", ...groups] : groups.length > 0 ? groups : ["member"],
+    origin: email.length > 0 ? "direct" : "service",
     orgRoleModel: "organization",
     orgRole: isAdmin ? "admin" : "member",
   };
@@ -144,6 +145,7 @@ const bindSubject = (
     accountId: identityKey(subject),
     email,
     name: email.length > 0 ? email : subject,
+    origin: "service",
     roles: isAdmin ? ["admin"] : ["member"],
     // Restated rather than left to the spread: `Principal` discriminates `orgRole`
     // on `orgRoleModel`, so the spread alone leaves the union open and `orgRole`
@@ -171,10 +173,13 @@ export const internalPrincipal = (
   config: CloudflareConfig,
   delegated: DelegatedIdentity,
 ): Principal | null => {
-  const service = principalFromAccessClaims(
-    { common_name: config.accessDelegationCommonName ?? INTERNAL_BINDING_COMMON_NAME },
-    config,
-  );
+  const service: Principal = {
+    ...principalFromAccessClaims(
+      { common_name: config.accessDelegationCommonName ?? INTERNAL_BINDING_COMMON_NAME },
+      config,
+    ),
+    origin: "service",
+  };
   const subject = delegated.subject?.trim() ?? "";
   const email = delegated.email?.trim() ?? "";
   if (subject.length === 0 && email.length === 0) return service;
@@ -210,6 +215,7 @@ export const makeAccessVerifier = (config: CloudflareConfig) => {
     name: "Dev",
     avatarUrl: null,
     roles: ["admin"],
+    origin: "direct",
     orgRoleModel: "organization",
     orgRole: "admin",
   };

@@ -39,6 +39,7 @@ export {
   type HostedHttpClientOptions,
   type HostedInternalFetcher,
   type HostedInternalHosts,
+  type InternalOrigin,
 } from "./hosted-http-client";
 
 export {

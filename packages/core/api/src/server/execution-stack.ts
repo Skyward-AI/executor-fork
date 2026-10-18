@@ -118,6 +118,8 @@ export const makeExecutionStack = <
     /** Workspace-settings permission for this binding (see
      *  `ExecutorConfig.orgWrites`), derived from the acting member's role. */
     readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
+    /** How the acting account reached the executor (see `makeScopedExecutor`). */
+    readonly origin?: "direct" | "service";
   },
 ): Effect.Effect<
   { readonly executor: Executor<TPlugins>; readonly engine: ExecutionEngine<Cause.YieldableError> },
@@ -132,6 +134,7 @@ export const makeExecutionStack = <
       {
         plugins: { mcpResource: options?.mcpResource },
         ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
+        ...(options?.origin === undefined ? {} : { origin: options.origin }),
       },
     ).pipe(Effect.withSpan("executor.stack.scoped_executor"));
     const codeExecutor = yield* CodeExecutorProvider.asEffect().pipe(

@@ -251,6 +251,7 @@ export const makeExecutionStackMiddleware = <
                 resolved.orgRoleModel === "none" || resolved.orgRole === "admin"
                   ? "allowed"
                   : "denied",
+              origin: resolved.origin,
             },
           ).pipe(
             Effect.provide(options.stackLayer, { local: true }),

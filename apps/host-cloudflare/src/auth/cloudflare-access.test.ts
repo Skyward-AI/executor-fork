@@ -209,6 +209,53 @@ describe("internalPrincipal", () => {
   });
 });
 
+describe("principal origin", () => {
+  const internal: CloudflareConfig = { ...delegating, trustedInternal: true };
+
+  it("marks a person who reached Access with their own client as direct", () => {
+    const p = principalFromAccessClaims({ sub: "u", email: "person@example.com" }, config);
+    expect(p.origin).toBe("direct");
+  });
+
+  it("marks a service token as service", () => {
+    const p = principalFromAccessClaims({ common_name: "agent-token.access" }, config);
+    expect(p.origin).toBe("service");
+  });
+
+  it("marks a delegated run as service even though it acts as a person", () => {
+    const p = applyDelegatedSubject(delegatorPrincipal(), delegating, {
+      subject: "alice@example.com",
+      email: "alice@example.com",
+    });
+    expect(p?.origin).toBe("service");
+  });
+
+  it("marks the internal door as service, with or without a named person", () => {
+    const own = internalPrincipal(internal, { subject: null, email: null });
+    const named = internalPrincipal(internal, {
+      subject: "alice@example.com",
+      email: "alice@example.com",
+    });
+    expect([own?.origin, named?.origin]).toEqual(["service", "service"]);
+  });
+
+  it.effect("ignores an x-executor-origin header on the request", () =>
+    Effect.gen(function* () {
+      const { verify } = makeAccessVerifier(internal);
+      const p = yield* verify(
+        new Request("https://executor.test/mcp", {
+          headers: {
+            "X-Executor-Subject": "alice@example.com",
+            "X-Executor-Subject-Email": "alice@example.com",
+            "X-Executor-Origin": "direct",
+          },
+        }),
+      );
+      expect(p?.origin).toBe("service");
+    }),
+  );
+});
+
 describe("makeAccessVerifier doors", () => {
   const delegatedRequest = () =>
     new Request("https://executor.test/mcp", {

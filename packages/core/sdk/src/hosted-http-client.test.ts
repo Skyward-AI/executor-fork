@@ -532,6 +532,32 @@ describe("internal host routing", () => {
     expect(external.urls).toEqual(["https://api.example/openapi.json"]);
   });
 
+  it("stamps the origin on internal hosts, replacing any value the request carried", async () => {
+    const seen: Array<string | null> = [];
+    const binding = {
+      fetch: async (request: Request) => {
+        seen.push(request.headers.get("x-executor-origin"));
+        return new Response("ok");
+      },
+    };
+    const external = externalStub();
+    const make = (internalOrigin?: "direct" | "service") =>
+      makeHostedFetch({
+        fetch: external.fetch,
+        resolveHostname: publicResolver,
+        internalHosts: { "tools.internal": binding },
+        ...(internalOrigin === undefined ? {} : { internalOrigin }),
+      });
+    const forged = { headers: { "x-executor-origin": "direct" } };
+
+    await make("direct")("https://tools.internal/mcp/websearch");
+    await make("service")("https://tools.internal/mcp/websearch");
+    await make("service")("https://tools.internal/mcp/websearch", forged);
+    await make()("https://tools.internal/mcp/websearch", forged);
+
+    expect(seen).toEqual(["direct", "service", "service", null]);
+  });
+
   it("hands the binding a manual-redirect request and returns its redirect untouched", async () => {
     const seen: string[] = [];
     const binding = {
