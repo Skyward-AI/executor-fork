@@ -56,10 +56,19 @@
       "types": "./src/shell/smoke-render.ts",
       "default": "./src/shell/smoke-render.ts"
     },
+    "./precompile": {
+      "types": "./src/precompile/precompile.ts",
+      "default": "./src/precompile/precompile.ts"
+    },
+    "./compile-fingerprint": {
+      "types": "./src/precompile/compile-fingerprint.gen.ts",
+      "default": "./src/precompile/compile-fingerprint.gen.ts"
+    },
     "./globals.css": "./src/shell/globals.css"
   },
   "scripts": {
-    "build:shell": "bun run gen:smoke-harness && vite build --config vite.config.shell.ts",
+    "build:shell": "bun run gen:precompile && bun run gen:smoke-harness && vite build --config vite.config.shell.ts",
+    "gen:precompile": "bun scripts/gen-precompile-assets.ts",
     "gen:provided-globals": "bun scripts/gen-provided-globals.ts",
     "fonts:subset": "bun scripts/subset-fonts.ts",
     "typecheck": "tsgo --noEmit",
@@ -77,14 +86,15 @@
     "@tanstack/react-query": "^5.99.0",
     "effect": "catalog:",
     "esbuild": "^0.27.7",
-    "sucrase": "^3.35.1"
+    "sucrase": "^3.35.1",
+    "tailwindcss": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@executor-js/execution": "workspace:*",
     "@executor-js/host-mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*",
-    "@tailwindcss/browser": "^4.2.2",
+    "@tailwindcss/browser": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
@@ -96,7 +106,6 @@
     "react": "catalog:",
     "react-dom": "catalog:",
     "recharts": "3.8.0",
-    "tailwindcss": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plugin-singlefile": "^2.3.2",

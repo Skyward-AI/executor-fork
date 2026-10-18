@@ -8,7 +8,6 @@ import React, {
   Fragment,
   createContext,
 } from "react";
-import { transform } from "sucrase";
 
 import {
   infiniteQueryOptions,
@@ -22,6 +21,8 @@ import {
 } from "./hooks";
 import * as Components from "./components";
 import * as QueryHooks from "./hooks";
+
+export { compileJsx } from "./compile-jsx";
 
 export type EvaluatedComponent =
   | { component: React.ComponentType; config: Record<string, unknown> }
@@ -44,16 +45,6 @@ const blockedNetworkPrimitive = (name: string) =>
   function blockedNetworkPrimitive() {
     throw new Error(`${name} is disabled in generated UI. Use tools.* via useQuery/useMutation.`);
   };
-
-/** Compile JSX source to plain JS using Sucrase. */
-export function compileJsx(code: string): string {
-  const result = transform(code, {
-    transforms: ["jsx", "typescript", "imports"],
-    jsxRuntime: "classic",
-    production: true,
-  });
-  return result.code;
-}
 
 /**
  * Evaluate compiled JS in a scoped context providing React, hooks,
