@@ -29,7 +29,8 @@ import { StrictMode, createElement } from "react";
 import { renderToReadableStream } from "react-dom/server.browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { compileJsx, evaluateComponent } from "./component-runtime";
+import { compileJsx } from "./compile-jsx";
+import { evaluateComponent } from "./component-runtime";
 import * as Components from "./components";
 import { createToolsProxy } from "./tools-proxy";
 import type { SmokeRenderResult } from "./smoke-render-result";

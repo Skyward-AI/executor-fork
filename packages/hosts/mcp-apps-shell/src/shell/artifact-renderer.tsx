@@ -170,6 +170,8 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
   hostRef.current = props.host as HttpShellHost;
   const codeRef = useRef(props.code);
   codeRef.current = props.code;
+  const compiledRef = useRef(props.compiled);
+  compiledRef.current = props.compiled;
   const artifactIdRef = useRef(props.artifactId);
   artifactIdRef.current = props.artifactId;
   // The page's "you can drop the skeleton now" callback, read through a ref for
@@ -310,13 +312,16 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
     // other MCP-Apps client, with no artifact-page-only branch.
     bridge.oninitialized = () => {
       const code = codeRef.current;
+      const compiled = compiledRef.current;
       const artifactId = artifactIdRef.current;
+      // `compiled` rides on both messages: the shell renders on the input and
+      // again on the result, and the first render must not take the slow path.
       void bridge
-        .sendToolInput({ arguments: { code, artifactId } })
+        .sendToolInput({ arguments: { code, compiled, artifactId } })
         .then(() =>
           bridge.sendToolResult({
             content: [{ type: "text", text: "Rendered saved artifact." }],
-            structuredContent: { code, artifactId },
+            structuredContent: { code, compiled, artifactId },
           }),
         )
         .catch((error: unknown) => {

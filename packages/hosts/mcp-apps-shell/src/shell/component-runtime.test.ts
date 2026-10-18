@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { compileJsx, evaluateComponent } from "./component-runtime";
+import { compileJsx } from "./compile-jsx";
+import { evaluateComponent } from "./component-runtime";
 
 describe("generated UI component runtime", () => {
   it("accepts export default function components", () => {

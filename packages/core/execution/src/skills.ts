@@ -623,6 +623,7 @@ const ARTIFACT_STYLE_SKILL_BODY = [
   "- `100vh` / `100vw` sizing. The viewport those refer to is the frame's, not the window's, so they either overflow or collapse. Use `h-full` against a bounded parent.",
   "- Rounded corners on an element with a border on only one side.",
   "- Icons larger than 20px inline (16px is the default, `size-4`); 24px is the ceiling for a genuinely decorative one.",
+  '- Class names built by interpolation or concatenation (`` `bg-${tone}` ``, `"w-" + n`). Write every class as a complete literal, and pick between whole literals (`on ? "bg-muted" : "bg-card"`).',
 ].join("\n");
 
 export const ARTIFACT_STYLE_SKILL: Skill = {
