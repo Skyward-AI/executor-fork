@@ -34,7 +34,6 @@ import {
 import { ArtifactStageSkeleton } from "../components/artifact-stage-skeleton";
 import { Button } from "../components/button";
 import { ErrorState } from "../components/error-state";
-import { isAsyncResultLoading } from "../lib/async-result";
 import { useExecutorDocumentTitle } from "../lib/document-title";
 import { formatRelativeTime } from "../lib/relative-time";
 import { RenameArtifactDialog } from "./artifact-rename-dialog";
@@ -202,32 +201,35 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
         with the route and stays until the artifact has actually painted, with
         every one of those boundaries crossed underneath it.
 
-        `isAsyncResultLoading` and `onInitial` therefore collapse into the SAME
-        surface the stage shows, rather than each having its own.
+        The stage mounts with the route too, so the loading row, the chunk and
+        the shell document all run in parallel under that one skeleton.
       */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        {isAsyncResultLoading(artifact) ? (
-          <ArtifactStageSkeleton />
-        ) : (
-          AsyncResult.match(artifact, {
-            onInitial: () => <ArtifactStageSkeleton />,
-            // A deleted or foreign id lands here. The message says which of the
-            // two it is as far as this viewer can tell, and offers the way back.
-            // An error REPLACES the skeleton rather than stacking on it: the
-            // wait is over, and what it produced was an answer.
-            onFailure: () => (
-              <div className="p-6">
-                <ErrorState
-                  message="This artifact isn't available. It may have been deleted."
-                  onRetry={refresh}
-                />
-              </div>
-            ),
-            onSuccess: ({ value }) => (
-              <ArtifactStage code={value.code} compiled={value.compiled} artifactId={value.id} />
-            ),
-          })
-        )}
+        {
+          // A failed row REPLACES the stage rather than stacking on it: the
+          // wait is over, what it produced was an answer, and unmounting the
+          // stage takes the early-booted frame with it so no blank frame is
+          // left behind the error. A deleted or foreign id lands here; the
+          // message says which of the two it is as far as this viewer can tell,
+          // and offers the way back.
+          AsyncResult.isFailure(artifact) ? (
+            <div className="p-6">
+              <ErrorState
+                message="This artifact isn't available. It may have been deleted."
+                onRetry={refresh}
+              />
+            </div>
+          ) : (
+            // Mounted while the row is still in flight (`code` null): the shell
+            // document is the largest download on this page, and the frame
+            // itself is what starts it, so it must not wait for the row.
+            <ArtifactStage
+              code={AsyncResult.isSuccess(artifact) ? artifact.value.code : null}
+              compiled={AsyncResult.isSuccess(artifact) ? artifact.value.compiled : undefined}
+              artifactId={props.artifactId}
+            />
+          )
+        }
       </div>
     </div>
   );
@@ -248,7 +250,7 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
  * instead of crashing.
  */
 function ArtifactStage(props: {
-  readonly code: string;
+  readonly code: string | null;
   readonly compiled: ArtifactRendererProps["compiled"];
   readonly artifactId: string;
 }) {

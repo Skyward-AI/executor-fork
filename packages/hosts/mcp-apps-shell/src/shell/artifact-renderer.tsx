@@ -136,10 +136,6 @@ const hostContextFor = (theme: "light" | "dark", viewport: number | null): McpUi
   [RENDER_SIGNAL_HOST_CONTEXT_KEY]: true,
 });
 
-// Read by `preloadArtifactRenderer` so the document download starts with the
-// chunk instead of when the iframe mounts.
-export { shellHtmlUrl };
-
 export default function ArtifactShell(props: ArtifactRendererProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -170,6 +166,20 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
   hostRef.current = props.host as HttpShellHost;
   const codeRef = useRef(props.code);
   codeRef.current = props.code;
+  // The frame is mounted before the source exists (`props.code` is `null` while
+  // the row is fetched), so it must not be remounted when the first source
+  // arrives, only when a LATER source replaces it. `claimedCodeRef` is the
+  // source the current frame is responsible for; `frameGenerationRef` is the
+  // iframe key.
+  const claimedCodeRef = useRef<string | null>(null);
+  const frameGenerationRef = useRef(0);
+  if (props.code !== null && props.code !== claimedCodeRef.current) {
+    if (claimedCodeRef.current !== null) frameGenerationRef.current += 1;
+    claimedCodeRef.current = props.code;
+  }
+  // Sends the source to the current bridge once it is both initialized and has
+  // a source; registered by `attachFrame`, called again when the source lands.
+  const deliverRef = useRef<(() => void) | null>(null);
   const compiledRef = useRef(props.compiled);
   compiledRef.current = props.compiled;
   const artifactIdRef = useRef(props.artifactId);
@@ -186,6 +196,10 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
   viewportRef.current = viewport;
 
   const bridgeRef = useRef<AppBridge | null>(null);
+
+  useEffect(() => {
+    deliverRef.current?.();
+  }, [props.code, props.compiled]);
 
   // Track the console's theme and forward it as host context, which is what
   // drives the shell's own `applyTheme` — inside the iframe's document, where it
@@ -310,8 +324,16 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
     // exact shape `renderedInAppResult` builds in the MCP host. The shell
     // already handles both, so it takes the same path here as it does under any
     // other MCP-Apps client, with no artifact-page-only branch.
-    bridge.oninitialized = () => {
+    //
+    // The frame can initialize before the row has arrived, so delivery waits for
+    // both: whichever of "initialized" and "source known" happens last sends it,
+    // exactly once per frame.
+    let initialized = false;
+    let delivered = false;
+    const deliver = () => {
       const code = codeRef.current;
+      if (!initialized || delivered || code === null) return;
+      delivered = true;
       const compiled = compiledRef.current;
       const artifactId = artifactIdRef.current;
       // `compiled` rides on both messages: the shell renders on the input and
@@ -328,6 +350,11 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
           console.error("[executor-console] Failed to deliver the artifact to the shell:", error);
         });
     };
+    bridge.oninitialized = () => {
+      initialized = true;
+      deliver();
+    };
+    deliverRef.current = deliver;
 
     /**
      * The app keeps reporting its content height. In fill mode this host
@@ -396,6 +423,7 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
     // null out its successor.
     return () => {
       void bridge.close();
+      if (deliverRef.current === deliver) deliverRef.current = null;
       if (bridgeRef.current === bridge) bridgeRef.current = null;
       if (frameRef.current === frame) frameRef.current = null;
     };
@@ -413,11 +441,12 @@ export default function ArtifactShell(props: ArtifactRendererProps) {
       className="h-full min-h-0 w-full"
     >
       <iframe
-        // Keyed on the source: opening a different artifact remounts the
-        // element, which detaches the old bridge and attaches a fresh one to a
-        // fresh document rather than reusing a shell that has already rendered
-        // something else.
-        key={props.code}
+        // Keyed on the source, once there is one: a different source remounts
+        // the element, which detaches the old bridge and attaches a fresh one to
+        // a fresh document rather than reusing a shell that has already rendered
+        // something else. The first source does not remount: the frame was
+        // mounted before it, so the shell document is already downloading.
+        key={frameGenerationRef.current}
         ref={attachFrame}
         data-testid="artifact-shell-frame"
         title="Artifact"
