@@ -1,11 +1,40 @@
 import { describe, expect, it } from "@effect/vitest";
+// oxlint-disable-next-line executor/no-vitest-import -- vi.mock hoisting needs the vitest import
+import { vi } from "vitest";
 import type { D1Database } from "@cloudflare/workers-types";
 
 import { collectTables, type SqliteDataMigrationClient } from "@executor-js/sdk";
 import { createSqliteTestFumaDb } from "@executor-js/sdk/testing";
 
-import { createD1ExecutorDb } from "./d1";
-import { cloudflareDataMigrationIds } from "./data-migrations";
+const { extraMigrationIds, prepareSpy } = vi.hoisted(() => ({
+  extraMigrationIds: [] as string[],
+  prepareSpy: vi.fn(),
+}));
+
+vi.mock("./data-migrations", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./data-migrations")>();
+  return {
+    ...original,
+    cloudflareDataMigrationIds: () => [
+      ...original.cloudflareDataMigrationIds(),
+      ...extraMigrationIds,
+    ],
+    prepareCloudflareD1Data: (...args: Parameters<typeof original.prepareCloudflareD1Data>) => {
+      prepareSpy();
+      return original.prepareCloudflareD1Data(...args);
+    },
+  };
+});
+
+const { createD1ExecutorDb } = await import("./d1");
+const { cloudflareDataMigrationIds } = await import("./data-migrations");
+
+const readMarker = async (client: SqliteDataMigrationClient): Promise<string> => {
+  const result = await client.execute(
+    `SELECT fingerprint FROM private_executor_cloudflare_schema_fingerprint WHERE id = 'runtime-schema'`,
+  );
+  return String(result.rows[0]?.fingerprint);
+};
 
 const makeRecordingD1 = (
   client: SqliteDataMigrationClient,
@@ -298,6 +327,54 @@ describe("createD1ExecutorDb", () => {
       statements.slice(secondStart).filter((sql) => sql.startsWith("SELECT fingerprint")),
     ).toHaveLength(2);
     expect(statements.slice(secondStart).filter(isRuntimeSchemaStatement)).toEqual([]);
+
+    await sqlite.close();
+  });
+
+  it("prepares the database and rewrites the marker when a data migration id is added", async () => {
+    const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
+    const { db, statements } = makeRecordingD1(sqlite.client);
+    const first = await createD1ExecutorDb(db, undefined);
+    await first.close();
+    const oldMarker = await readMarker(sqlite.client);
+
+    extraMigrationIds.push("9999-added-migration");
+    prepareSpy.mockClear();
+    const secondStart = statements.length;
+    const second = await createD1ExecutorDb(db, undefined);
+    await second.close();
+    extraMigrationIds.length = 0;
+
+    expect(prepareSpy).toHaveBeenCalledTimes(1);
+    expect(
+      statements.slice(secondStart).some((sql) => sql.includes("SELECT name FROM data_migration")),
+    ).toBe(true);
+    expect(await readMarker(sqlite.client)).not.toBe(oldMarker);
+
+    await sqlite.close();
+  });
+
+  it("keeps the old marker when data preparation fails so the next open retries", async () => {
+    const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
+    const { db, failWhen } = makeRecordingD1(sqlite.client);
+    const first = await createD1ExecutorDb(db, undefined);
+    await first.close();
+    const oldMarker = await readMarker(sqlite.client);
+
+    extraMigrationIds.push("9999-added-migration");
+    failWhen((sql) => sql.includes("SELECT name FROM data_migration"));
+    await expect(createD1ExecutorDb(db, undefined)).rejects.toBeDefined();
+
+    expect(await readMarker(sqlite.client)).toBe(oldMarker);
+
+    failWhen(null);
+    prepareSpy.mockClear();
+    const retried = await createD1ExecutorDb(db, undefined);
+    await retried.close();
+    extraMigrationIds.length = 0;
+
+    expect(prepareSpy).toHaveBeenCalledTimes(1);
+    expect(await readMarker(sqlite.client)).not.toBe(oldMarker);
 
     await sqlite.close();
   });
