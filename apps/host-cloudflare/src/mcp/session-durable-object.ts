@@ -135,6 +135,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       artifactsEnabled: token.artifactsEnabled,
       searchToolsEnabled: token.searchToolsEnabled,
       toolMode: token.toolMode,
+      origin: token.origin,
     } satisfies SessionMeta);
   }
 
@@ -152,7 +153,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
-        { mcpResource: sessionMeta.resource, orgWrites: "request" },
+        { mcpResource: sessionMeta.resource, orgWrites: "request", origin: sessionMeta.origin },
       ).pipe(Effect.provide(makeCloudflareExecutionStackLayer(config, dbHandle)));
       // Browser elicitation mode (the base owns the approval store + the HTTP
       // approval RPCs): a gated execution pauses and returns an approvalUrl into

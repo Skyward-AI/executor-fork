@@ -50,6 +50,7 @@ import {
   makeHostedHttpClientLayer,
   touchSubject,
   type HostedInternalHosts,
+  type InternalOrigin,
 } from "@executor-js/sdk/host-internal";
 
 import { DbProvider } from "./executor-fuma-db";
@@ -285,6 +286,9 @@ export const makeScopedExecutor = <
      *  `ExecutorConfig.orgWrites`). Hosts derive it from the acting member's
      *  role; omitted -> allowed (hosts with no role model). */
     readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
+    /** How the acting account reached the executor, stamped on internal-host
+     *  calls. Omitted -> `service`. */
+    readonly origin?: InternalOrigin;
   },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
@@ -340,6 +344,7 @@ export const makeScopedExecutor = <
       requireTls: config.requireTls,
       internalHosts: config.internalHosts,
       internalCaller: accountId,
+      internalOrigin: options?.origin ?? "service",
     };
     const httpClientLayer = makeHostedHttpClientLayer(hostedHttpOptions);
     const hostedFetch = makeHostedFetch(hostedHttpOptions);

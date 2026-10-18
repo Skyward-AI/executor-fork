@@ -26,6 +26,9 @@ export interface HostedInternalFetcher {
 /** Exact lowercase hostname to the fetcher that serves it, e.g. `tools.internal`. */
 export type HostedInternalHosts = Readonly<Record<string, HostedInternalFetcher>>;
 
+/** `direct`: a person's own client. `service`: everything else, delegated runs included. */
+export type InternalOrigin = "direct" | "service";
+
 export interface HostedHttpClientOptions {
   /**
    * Private hosts served by a service binding instead of the network. A request
@@ -41,6 +44,13 @@ export interface HostedHttpClientOptions {
    * means the header is removed.
    */
   readonly internalCaller?: string;
+  /**
+   * How the acting account reached this executor, sent to internal hosts only as
+   * `x-executor-origin`. Decided by the host from server-side facts; any value
+   * the request already carried is replaced, and absent means the header is
+   * removed.
+   */
+  readonly internalOrigin?: InternalOrigin;
   readonly allowLocalNetwork?: boolean;
   /** Require HTTPS, except private addresses explicitly allowed for local development. */
   readonly requireTls?: boolean;
@@ -307,6 +317,9 @@ const guardFetch = (
 /** Carries `HostedHttpClientOptions.internalCaller` to an internal host. */
 export const INTERNAL_CALLER_HEADER = "x-executor-account-id";
 
+/** Carries `HostedHttpClientOptions.internalOrigin` to an internal host. */
+export const INTERNAL_ORIGIN_HEADER = "x-executor-origin";
+
 // The router sits OUTSIDE the guard: a configured internal host goes straight to
 // its binding, everything else takes the guarded path unchanged.
 const routeInternalHosts = (
@@ -328,6 +341,10 @@ const routeInternalHosts = (
       request.headers.delete(INTERNAL_CALLER_HEADER);
       if (options.internalCaller) {
         request.headers.set(INTERNAL_CALLER_HEADER, options.internalCaller);
+      }
+      request.headers.delete(INTERNAL_ORIGIN_HEADER);
+      if (options.internalOrigin) {
+        request.headers.set(INTERNAL_ORIGIN_HEADER, options.internalOrigin);
       }
       return await target.fetch(request);
     }

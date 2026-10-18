@@ -50,6 +50,9 @@ const PrincipalFields = {
   name: Schema.NullOr(Schema.String),
   avatarUrl: Schema.NullOr(Schema.String),
   roles: Schema.Array(Schema.String),
+  /** How the principal reached the executor, decided by the host from
+   *  server-side facts. Absent is treated as `service`. */
+  origin: Schema.optional(Schema.Literals(["direct", "service"])),
 } as const;
 
 export const Principal = Schema.Union([

@@ -92,6 +92,7 @@ const propsForPrincipal = (
         toolMode: readToolMode(request),
         resource,
         webOrigin: new URL(request.url).origin,
+        origin: principal.origin ?? "service",
       },
       propagation,
     };

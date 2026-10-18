@@ -88,6 +88,9 @@ interface McpSessionInitBase {
    *  `/mcp/toolkits/<slug>` toolkit), so the tool catalog is scoped to it. */
   readonly resource: McpResource;
   readonly webOrigin?: string;
+  /** How the principal reached the executor, decided server-side at connect
+   *  time (see `Principal.origin`). Absent means `service`. */
+  readonly origin?: "direct" | "service";
 }
 
 /** Live session initialization metadata from an authenticated principal. */
@@ -173,6 +176,9 @@ interface SessionMetaBase {
    *  `buildMcpServer` scopes the tool catalog to it. */
   readonly resource: McpResource;
   readonly webOrigin?: string;
+  /** The origin carried from {@link McpSessionInit}. Absent, including for
+   *  sessions persisted before the field existed, means `service`. */
+  readonly origin?: "direct" | "service";
   /**
    * Whether this session's client advertised MCP-Apps support at `initialize`.
    *
