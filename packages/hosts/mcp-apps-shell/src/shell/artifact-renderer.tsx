@@ -137,6 +137,10 @@ const hostContextFor = (theme: "light" | "dark", viewport: number | null): McpUi
   [RENDER_SIGNAL_HOST_CONTEXT_KEY]: true,
 });
 
+// Read by `preloadArtifactRenderer` so the document download starts with the
+// chunk instead of when the iframe mounts.
+export { shellHtmlUrl };
+
 export default function ArtifactShell(props: ArtifactRendererProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);

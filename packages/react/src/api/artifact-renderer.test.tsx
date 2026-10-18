@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "@effect/vitest";
 
 import { preloadArtifactRenderer, type ArtifactRendererLoader } from "./artifact-renderer";
 
@@ -89,5 +89,46 @@ describe("preloadArtifactRenderer", () => {
 
     expect(first.calls()).toBe(1);
     expect(second.calls()).toBe(1);
+  });
+});
+
+describe("preloadArtifactRenderer shell document prefetch", () => {
+  // The suite runs without a DOM, so a minimal `document` records what is
+  // appended to the head.
+  const appended: Array<{ rel: string; as: string; href: string }> = [];
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+  };
+
+  beforeEach(() => {
+    appended.length = 0;
+    vi.stubGlobal("document", {
+      createElement: () => ({ rel: "", as: "", href: "" }),
+      head: { appendChild: (node: (typeof appended)[number]) => appended.push(node) },
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("adds one prefetch link for the shell document, however many loaders announce it", async () => {
+    const url = "/assets/executor-mcp-apps-shell-test.html";
+    const loaderFor = (): ArtifactRendererLoader => async () => ({
+      default: (() => null) as never,
+      shellHtmlUrl: url,
+    });
+
+    preloadArtifactRenderer(loaderFor());
+    preloadArtifactRenderer(loaderFor());
+    await settle();
+
+    expect(appended).toEqual([{ rel: "prefetch", as: "document", href: url }]);
+  });
+
+  it("adds no link when the renderer does not announce a document", async () => {
+    preloadArtifactRenderer(countingLoader().loader);
+    await settle();
+
+    expect(appended).toEqual([]);
   });
 });
