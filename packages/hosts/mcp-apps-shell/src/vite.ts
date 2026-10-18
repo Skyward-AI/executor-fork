@@ -64,6 +64,9 @@ export const bundleInnerRenderer = async (): Promise<string> => {
     platform: "browser",
     target: "es2022",
     jsx: "automatic",
+    // The IIFE is embedded as a string in the shell document and again in every
+    // srcdoc, so production pays for its size on each view.
+    minify: process.env.NODE_ENV === "production",
     define: {
       "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
     },
