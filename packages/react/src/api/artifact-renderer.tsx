@@ -17,9 +17,9 @@ import * as React from "react";
 // for any host-specific capability.
 //
 // The seam carries a LOADER, not a component. The shell is browser-only by
-// nature: it imports `@tailwindcss/browser`, which builds a `<style>` element
-// at import scope, and it harvests `document.styleSheets` to seed the sandboxed
-// iframe. Under SSR (cloud is TanStack Start) a static import of the shell puts
+// nature: it imports `globals.css`, whose build-time sheet becomes a `<style>`
+// element at import scope, and it harvests `document.styleSheets` to seed the
+// sandboxed iframe. Under SSR (cloud is TanStack Start) a static import of the shell puts
 // that module in the server graph and every document request dies with
 // `ReferenceError: document is not defined` before a component ever renders.
 // Keeping the seam async means the composition roots hand over a `() =>
