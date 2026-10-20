@@ -118,17 +118,17 @@ export const ArtifactsHandlers = HttpApiBuilder.group(ExecutorApi, "artifacts", 
           // same allowlist the create-time preview goes through, which is what
           // makes the console safe to render either kind identically.
           //
-          // A payload that sanitizes to nothing is reported as not stored
-          // rather than as an error: the caller is a viewer who merely opened
-          // an artifact, and the card simply keeps its layout preview.
+          // A payload that sanitizes to nothing, or one from a caller who did
+          // not create the artifact, is reported as not stored rather than as
+          // an error: the caller is a viewer who merely opened an artifact, and
+          // the card simply keeps its layout preview.
           const sanitized = sanitizeArtifactPreviewMarkup(payload.preview);
           if (sanitized === null) return { stored: false };
           const executor = yield* ExecutorService;
-          yield* executor.artifacts.setPreview({
+          return yield* executor.artifacts.setPreview({
             id: path.artifactId,
             preview: sanitized,
           });
-          return { stored: true };
         }),
       ),
     ),

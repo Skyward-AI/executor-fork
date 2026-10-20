@@ -328,6 +328,7 @@ describe("executor.artifacts", () => {
         readonly owner: "org" | "user";
         readonly subject: string;
         readonly createdBy: string | null;
+        readonly preview?: string | null;
       },
     ) =>
       Effect.promise(() =>
@@ -340,7 +341,8 @@ describe("executor.artifacts", () => {
           description: null,
           code: CODE,
           bindings: null,
-          preview: null,
+          preview: row.preview ?? null,
+          preview_capture: null,
           compiled_fingerprint: null,
           compiled_js: null,
           compiled_css: null,
@@ -468,6 +470,178 @@ describe("executor.artifacts", () => {
         expect(yield* bob.artifacts.list()).toEqual([]);
       }).pipe(Effect.scoped),
     );
+
+    describe("capture privacy", () => {
+      const LAYOUT = '<div class="p-4"><h2>Revenue</h2></div>';
+      const LAYOUT_V2 = '<div class="p-4"><h2>Revenue v2</h2></div>';
+      const CAPTURE = '<div class="p-4"><h2>Revenue</h2><p>12,480 active</p></div>';
+      const BOB_CAPTURE = '<div class="p-4"><h2>Revenue</h2><p>3 active</p></div>';
+      const IMAGE = "data:image/png;base64,AAAA";
+      const markup = (value: string) => ({ kind: "layout", markup: value });
+
+      it.effect("the creator sees their capture while another member keeps the layout", () =>
+        Effect.gen(function* () {
+          const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+          const bob = yield* makeMember(config, "bob");
+          const saved = yield* alice.artifacts.save({
+            title: "Revenue",
+            code: CODE,
+            preview: LAYOUT,
+          });
+
+          const result = yield* alice.artifacts.setPreview({ id: saved.id, preview: CAPTURE });
+
+          expect(result).toEqual({ stored: true });
+          expect((yield* alice.artifacts.get(saved.id)).preview).toEqual(markup(CAPTURE));
+          expect((yield* bob.artifacts.get(saved.id)).preview).toEqual(markup(LAYOUT));
+        }).pipe(Effect.scoped),
+      );
+
+      it.effect("another member's capture is not stored and changes nobody's preview", () =>
+        Effect.gen(function* () {
+          const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+          const bob = yield* makeMember(config, "bob");
+          const saved = yield* alice.artifacts.save({
+            title: "Revenue",
+            code: CODE,
+            preview: LAYOUT,
+          });
+
+          const result = yield* bob.artifacts.setPreview({ id: saved.id, preview: BOB_CAPTURE });
+
+          expect(result).toEqual({ stored: false });
+          expect((yield* alice.artifacts.get(saved.id)).preview).toEqual(markup(LAYOUT));
+          expect((yield* bob.artifacts.get(saved.id)).preview).toEqual(markup(LAYOUT));
+        }).pipe(Effect.scoped),
+      );
+
+      it.effect("a capture on an org artifact with no recorded creator is not stored", () =>
+        Effect.gen(function* () {
+          const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+          const bob = yield* makeMember(config, "bob");
+          yield* insertRow(
+            config,
+            { tenant: String(config.tenant), subject: "bob" },
+            { id: "art_legacy", owner: "org", subject: "", createdBy: null, preview: LAYOUT },
+          );
+
+          expect(yield* alice.artifacts.setPreview({ id: "art_legacy", preview: CAPTURE })).toEqual(
+            { stored: false },
+          );
+          expect(yield* bob.artifacts.setPreview({ id: "art_legacy", preview: CAPTURE })).toEqual({
+            stored: false,
+          });
+          expect((yield* alice.artifacts.get("art_legacy")).preview).toEqual(markup(LAYOUT));
+        }).pipe(Effect.scoped),
+      );
+
+      it.effect("the owner of a personal artifact stores and sees their capture", () =>
+        Effect.gen(function* () {
+          const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+          yield* insertRow(
+            config,
+            { tenant: String(config.tenant), subject: "test-subject" },
+            {
+              id: "art_mine",
+              owner: "user",
+              subject: "test-subject",
+              createdBy: null,
+              preview: LAYOUT,
+            },
+          );
+
+          const result = yield* alice.artifacts.setPreview({ id: "art_mine", preview: CAPTURE });
+
+          expect(result).toEqual({ stored: true });
+          expect((yield* alice.artifacts.get("art_mine")).preview).toEqual(markup(CAPTURE));
+        }).pipe(Effect.scoped),
+      );
+
+      it.effect("sharing a personal artifact keeps the owner's capture", () =>
+        Effect.gen(function* () {
+          const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+          const bob = yield* makeMember(config, "bob");
+          yield* insertRow(
+            config,
+            { tenant: String(config.tenant), subject: "test-subject" },
+            {
+              id: "art_mine",
+              owner: "user",
+              subject: "test-subject",
+              createdBy: null,
+              preview: LAYOUT,
+            },
+          );
+          yield* alice.artifacts.setPreview({ id: "art_mine", preview: CAPTURE });
+
+          yield* alice.artifacts.share({ id: "art_mine" });
+
+          expect((yield* alice.artifacts.get("art_mine")).preview).toEqual(markup(CAPTURE));
+          expect((yield* bob.artifacts.get("art_mine")).preview).toEqual(markup(LAYOUT));
+        }).pipe(Effect.scoped),
+      );
+
+      it.effect("an overwrite clears the capture and falls back to the new layout", () =>
+        Effect.gen(function* () {
+          const { executor: alice } = yield* makeTestWorkspaceHarness();
+          const saved = yield* alice.artifacts.save({
+            title: "Revenue",
+            code: CODE,
+            preview: LAYOUT,
+          });
+          yield* alice.artifacts.setPreview({ id: saved.id, preview: CAPTURE });
+
+          yield* alice.artifacts.save({
+            id: saved.id,
+            title: "Revenue",
+            code: CODE,
+            preview: LAYOUT_V2,
+          });
+
+          expect((yield* alice.artifacts.get(saved.id)).preview).toEqual(markup(LAYOUT_V2));
+        }).pipe(Effect.scoped),
+      );
+
+      it.effect("an image snapshot left in the layout column is shown to its creator only", () =>
+        Effect.gen(function* () {
+          const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+          const bob = yield* makeMember(config, "bob");
+          const saved = yield* alice.artifacts.save({
+            title: "Revenue",
+            code: CODE,
+            preview: IMAGE,
+          });
+
+          expect((yield* alice.artifacts.get(saved.id)).preview).toEqual(markup(IMAGE));
+          expect((yield* bob.artifacts.get(saved.id)).preview).toBe(null);
+        }).pipe(Effect.scoped),
+      );
+
+      it.effect("lists the creator's capture, and hides an image from non-creators", () =>
+        Effect.gen(function* () {
+          const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+          const bob = yield* makeMember(config, "bob");
+          const saved = yield* alice.artifacts.save({
+            title: "Revenue",
+            code: CODE,
+            preview: LAYOUT,
+          });
+          yield* alice.artifacts.setPreview({ id: saved.id, preview: CAPTURE });
+          yield* insertRow(
+            config,
+            { tenant: String(config.tenant), subject: "bob" },
+            { id: "art_legacy", owner: "org", subject: "", createdBy: null, preview: IMAGE },
+          );
+
+          const aliceList = yield* alice.artifacts.list();
+          const bobList = yield* bob.artifacts.list();
+
+          expect(aliceList.find((a) => a.id === saved.id)?.preview).toEqual(markup(CAPTURE));
+          expect(bobList.map((a) => a.id)).toEqual(["art_legacy"]);
+          expect(bobList[0]?.preview).toBe(null);
+        }).pipe(Effect.scoped),
+      );
+    });
   });
 
   describe("previews", () => {

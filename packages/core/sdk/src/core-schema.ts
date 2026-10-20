@@ -425,6 +425,11 @@ export const coreTables = defineTables({
       // column existed have none, and so does one whose render was too large,
       // failed open, or has never been opened.
       preview: nullableTextColumn("preview"),
+      // The settled snapshot a viewer captured after opening the artifact. It
+      // holds whatever data that viewer could see, so it is written and read
+      // only for the artifact's creator and is never part of what other
+      // members get. Cleared by an overwrite; kept by a share.
+      preview_capture: nullableTextColumn("preview_capture"),
       // The server-side precompile of `code`: the fingerprint of the compiler
       // that produced it, the JSX transformed to plain JS, and the Tailwind
       // CSS for the classes the source uses. All nullable: never compiled, a
@@ -503,6 +508,9 @@ export type ArtifactRow = FumaRow<CoreSchema["artifact"]>;
  * The columns a list projects — everything except the JSX source, which only a
  * full read needs.
  *
+ * `created_by` and `preview_capture` are selected only so the reader can pick
+ * which preview the viewer gets; neither reaches the projection.
+ *
  * `preview` is here on purpose, and it is the one heavy-ish column that earns
  * its place: the gallery IS the list, so a preview fetched anywhere else would
  * be a second round trip per card to render the thing the card is made of.
@@ -516,6 +524,8 @@ export const ARTIFACT_SUMMARY_COLUMNS = [
   "title",
   "description",
   "preview",
+  "preview_capture",
+  "created_by",
   "created_at",
   "updated_at",
 ] as const satisfies readonly (keyof ArtifactRow)[];

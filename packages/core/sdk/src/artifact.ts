@@ -12,6 +12,7 @@
 import { Option, Schema, type Effect } from "effect";
 
 import type { ArtifactFullRow, ArtifactRow, ArtifactSummaryRow } from "./core-schema";
+import { isArtifactPreviewImage } from "./artifact-preview";
 import { ArtifactId, ConnectionName, IntegrationSlug, Owner } from "./ids";
 
 /**
@@ -122,14 +123,10 @@ export interface Artifact {
    * What the gallery draws for this artifact, or `null` to fall back to the
    * schematic.
    *
-   * DATA SAFETY. A `layout` preview is derived from `code` alone and is safe to
-   * treat as shared artifact metadata. An `image` preview is NOT: it is pixels
-   * of the artifact rendered with whatever data the VIEWER could see. Today
-   * every artifact is viewer-owned, so the row and the viewer are the same
-   * person and storing it here is correct. When org-tier sharing lands, an
-   * image preview must move to per-viewer storage or be excluded from shared
-   * views — otherwise one member's numbers become another's thumbnail. The
-   * `layout` half stays shareable either way, which is why both kinds exist.
+   * DATA SAFETY. The create-time layout preview is derived from `code` alone
+   * and is shared with every member. A settled capture holds its capturer's
+   * data, so it is stored apart and only its creator is shown it; everyone else
+   * gets the layout preview.
    */
   readonly preview: ArtifactPreview | null;
   readonly createdAt: Date;
@@ -244,18 +241,46 @@ export interface SetArtifactPreviewInput {
 const asDate = (value: Date | number | string): Date =>
   value instanceof Date ? value : new Date(value);
 
-export const rowToArtifactSummary = (row: ArtifactSummaryRow): ArtifactSummary => ({
+/**
+ * The preview this viewer may see. The creator gets their settled capture, else
+ * the layout preview. Anyone else gets the layout preview only, and nothing
+ * when that column holds an image snapshot written before captures were stored
+ * apart.
+ */
+const previewForViewer = (
+  row: Pick<ArtifactSummaryRow, "owner" | "created_by" | "preview" | "preview_capture">,
+  viewer: string | null,
+): ArtifactPreview | null => {
+  if (isArtifactCreator(row, viewer)) {
+    return previewFromColumn(row.preview_capture) ?? previewFromColumn(row.preview);
+  }
+  return typeof row.preview === "string" && isArtifactPreviewImage(row.preview)
+    ? null
+    : previewFromColumn(row.preview);
+};
+
+/** Whether `viewer` created the row: any personal row the policy let them
+ *  read, or an org row recorded against their subject. */
+export const isArtifactCreator = (
+  row: Pick<ArtifactSummaryRow, "owner" | "created_by">,
+  viewer: string | null,
+): boolean => row.owner === "user" || (viewer !== null && row.created_by === viewer);
+
+export const rowToArtifactSummary = (
+  row: ArtifactSummaryRow,
+  viewer: string | null,
+): ArtifactSummary => ({
   id: ArtifactId.make(row.id),
   owner: row.owner as Owner,
   title: row.title,
   description: row.description ?? null,
-  preview: previewFromColumn(row.preview),
+  preview: previewForViewer(row, viewer),
   createdAt: asDate(row.created_at),
   updatedAt: asDate(row.updated_at),
 });
 
-export const rowToArtifact = (row: ArtifactFullRow): Artifact => ({
-  ...rowToArtifactSummary(row),
+export const rowToArtifact = (row: ArtifactFullRow, viewer: string | null): Artifact => ({
+  ...rowToArtifactSummary(row, viewer),
   code: row.code,
   bindings: bindingsFromColumn(row.bindings),
 });

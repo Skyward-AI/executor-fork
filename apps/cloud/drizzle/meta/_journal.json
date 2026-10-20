@@ -169,6 +169,13 @@
       "when": 1792505978902,
       "tag": "0023_groovy_titania",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792517905833,
+      "tag": "0024_typical_ultimates",
+      "breakpoints": true
     }
   ]
 }
