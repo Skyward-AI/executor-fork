@@ -433,6 +433,7 @@ export {
 export {
   ADMIN_DEFAULT_PAGE_SIZE,
   ADMIN_MAX_PAGE_SIZE,
+  type AdminArtifactSummary,
   type AdminConnection,
   type AdminListSubjectsOptions,
   type AdminSubject,

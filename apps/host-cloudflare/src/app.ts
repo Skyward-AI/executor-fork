@@ -6,7 +6,6 @@ import {
   ExecutorApp,
   makeScopedExecutor,
   textFailureStrategy,
-  type ExecutorDbHandle,
 } from "@executor-js/api/server";
 
 import { internalPrincipal } from "./auth/cloudflare-access";
@@ -14,7 +13,7 @@ import { reconcileInternalIntegrations } from "./internal-integrations/reconcile
 import { makeInternalListTools } from "./internal-integrations/list-tools";
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "./config";
 import { makeCloudflarePlugins, type CloudflarePlugins } from "./plugins";
-import { createD1ExecutorDb } from "./db/d1";
+import { openDb } from "./db/handle";
 import { cloudflareAccessIdentityLayer } from "./auth/cloudflare-access";
 import {
   CloudflareCodeExecutorProvider,
@@ -41,21 +40,6 @@ import { makeCloudflareMcpAgentHandler } from "./mcp/agent-handler";
 // fetch; `env` arrives with that fetch (a Worker has no module-scope bindings),
 // so the providers close over it instead of reading process.env.
 // ===========================================================================
-
-// One D1 handle per isolate, shared by the request path and the cron. A failed
-// open is dropped so the next caller retries.
-let dbHandle: Promise<ExecutorDbHandle> | null = null;
-
-const openDb = (env: CloudflareEnv): Promise<ExecutorDbHandle> => {
-  if (dbHandle === null) {
-    const opening = createD1ExecutorDb(env.DB, env.BLOBS);
-    dbHandle = opening;
-    void opening.then(undefined, () => {
-      if (dbHandle === opening) dbHandle = null;
-    });
-  }
-  return dbHandle;
-};
 
 // One reconcile pass, run from the cron trigger (never on the request path), by a
 // system executor that may write org rows. Also refreshes existing declared

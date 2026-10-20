@@ -118,3 +118,20 @@ reaches through Access. With `X-Executor-Subject` (and `X-Executor-Subject-Email
 it acts for that person, as a trusted delegator would. The trusted mode lives on a
 config only the entrypoint builds (`loadConfig(env, { internal: true })`), so no
 header or variable can switch the public `fetch` into it.
+
+## The link-preview door
+
+For link previews in internal services there is a second, much narrower
+entrypoint, `ExecutorUnfurl`:
+
+```jsonc
+"services": [
+  { "binding": "EXECUTOR_UNFURL", "service": "executor-cloudflare", "entrypoint": "ExecutorUnfurl" }
+]
+```
+
+It is RPC only: `artifactSummary(id)` returns `{ title, description, updatedAt }`
+for an artifact in this deployment's tenant, whoever owns it, or `null` for an
+unknown or malformed id. It takes no identity, writes nothing and never returns
+source, bindings, previews, owner or subject. Like the door above, the binding
+is the trust boundary and it has no public route.
