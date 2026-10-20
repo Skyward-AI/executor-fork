@@ -89,6 +89,7 @@ import {
 export type { OnElicitation, InvokeOptions } from "./elicitation";
 import {
   compiledFromRow,
+  isArtifactCreator,
   rowToArtifact,
   rowToArtifactSummary,
   type Artifact,
@@ -543,11 +544,13 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       input: ShareArtifactInput,
     ) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
     readonly remove: (input: RemoveArtifactInput) => Effect.Effect<void, StorageFailure>;
-    /** Upgrade the stored preview to a snapshot of a settled render. Touches
-     *  only `preview`, and never `updated_at`. */
+    /** Store a snapshot of a settled render as the creator's preview. Touches
+     *  only `preview_capture`, and never `updated_at`. `stored` is false when
+     *  the caller is not the artifact's creator: the snapshot holds their data,
+     *  so it is dropped rather than shown to anyone else. */
     readonly setPreview: (
       input: SetArtifactPreviewInput,
-    ) => Effect.Effect<void, ArtifactNotFoundError | StorageFailure>;
+    ) => Effect.Effect<{ readonly stored: boolean }, ArtifactNotFoundError | StorageFailure>;
   };
 
   /**
@@ -6752,7 +6755,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ],
           select: ARTIFACT_SUMMARY_COLUMNS,
         })
-        .pipe(Effect.map((rows) => rows.map(rowToArtifactSummary)));
+        .pipe(Effect.map((rows) => rows.map((row) => rowToArtifactSummary(row, subject))));
 
     const artifactsGet = (
       id: string,
@@ -6763,7 +6766,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           select: ARTIFACT_FULL_COLUMNS,
         });
         if (!row) return yield* new ArtifactNotFoundError({ id: ArtifactId.make(id) });
-        return rowToArtifact(row);
+        return rowToArtifact(row, subject);
       });
 
     const compiledColumns = (compiled: ArtifactCompiledOutput | null) => ({
@@ -6791,7 +6794,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       Effect.gen(function* () {
         const row = yield* core.findFirst("artifact", { where: artifactById(id) });
         if (!row) return yield* new ArtifactNotFoundError({ id: ArtifactId.make(id) });
-        const artifact = rowToArtifact(row);
+        const artifact = rowToArtifact(row, subject);
         const compiler = config.artifactCompiler;
         if (!compiler) return { ...artifact, compiled: null };
 
@@ -6843,8 +6846,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // `bindings` is written on every overwrite, including back to null:
           // it interprets `code`, so carrying the previous value forward under
           // new source would bind roles the new code never declares. `preview`
-          // is written for exactly the same reason, and the case it prevents is
-          // visible: an image preview captured from the OLD render would
+          // and `preview_capture` are written for exactly the same reason, and
+          // the case it prevents is visible: a capture of the OLD render would
           // otherwise keep advertising a version of the artifact that no longer
           // exists.
           const set = {
@@ -6853,6 +6856,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             code: input.code,
             bindings: input.bindings ?? null,
             preview: input.preview ?? null,
+            preview_capture: null,
             // Compiled output is a function of `code`, so it is replaced with
             // it, and cleared when there is no compiler: stale output under new
             // source would render the previous version.
@@ -6860,7 +6864,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             updated_at: now,
           };
           yield* core.updateMany("artifact", { where, set });
-          return rowToArtifact({ ...existing, ...set });
+          return rowToArtifact({ ...existing, ...set }, subject);
         }
         const keys = yield* Effect.try({
           try: () => ownedKeys("org"),
@@ -6881,31 +6885,39 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
           updated_at: now,
         });
-        return rowToArtifact(created);
+        return rowToArtifact(created, subject);
       });
 
     /**
-     * Replace an artifact's preview with a snapshot of a settled render.
+     * Store a snapshot of a settled render as the creator's preview.
      *
-     * Only `preview` moves. `updated_at` deliberately does not: the gallery
-     * sorts by it, and opening an artifact must not reorder the grid — being
-     * looked at is not an edit.
+     * Only `preview_capture` moves, and only for the creator: a personal row
+     * (the policy already limits it to the caller) or an org row recorded
+     * against this subject. The snapshot holds the capturer's data, so any
+     * other caller, including every caller on a legacy row with no recorded
+     * creator, is told it was not stored. `updated_at` deliberately does not
+     * move: the gallery sorts by it, and being looked at is not an edit.
      */
     const artifactsSetPreview = (
       input: SetArtifactPreviewInput,
-    ): Effect.Effect<void, ArtifactNotFoundError | StorageFailure> =>
+    ): Effect.Effect<{ readonly stored: boolean }, ArtifactNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const where = artifactById(input.id);
-        const existing = yield* core.findFirst("artifact", { where });
+        const existing = yield* core.findFirst("artifact", {
+          where,
+          select: ARTIFACT_SUMMARY_COLUMNS,
+        });
         if (!existing) {
           return yield* new ArtifactNotFoundError({
             id: ArtifactId.make(input.id),
           });
         }
+        if (!isArtifactCreator(existing, subject)) return { stored: false };
         yield* core.updateMany("artifact", {
           where,
-          set: { preview: input.preview },
+          set: { preview_capture: input.preview },
         });
+        return { stored: true };
       });
 
     const artifactsRename = (
@@ -6924,7 +6936,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         const set = { title: input.title, updated_at: new Date() };
         yield* core.updateMany("artifact", { where, set });
-        return rowToArtifact({ ...existing, ...set });
+        return rowToArtifact({ ...existing, ...set }, subject);
       });
 
     // Only the owning subject can find a `user` row through the bound policy,
@@ -6942,7 +6954,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         const set = { owner: "org", subject: ORG_SUBJECT, created_by: existing.subject };
         yield* core.updateMany("artifact", { where, set });
-        return rowToArtifact({ ...existing, ...set });
+        return rowToArtifact({ ...existing, ...set }, subject);
       });
 
     // Hard delete: an artifact is not a connection, so there is no disabled or

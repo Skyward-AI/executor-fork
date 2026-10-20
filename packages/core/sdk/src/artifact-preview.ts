@@ -49,6 +49,13 @@
 export const ARTIFACT_PREVIEW_MARKUP_LIMIT = 32 * 1024;
 
 /**
+ * Whether a stored preview is a raster data URL rather than markup. Markup is
+ * all this host writes now, but an image snapshot captured by an older build
+ * can still sit in a row, and it carries its capturer's data.
+ */
+export const isArtifactPreviewImage = (value: string): boolean => value.startsWith("data:image/");
+
+/**
  * Elements that may appear in a preview.
  *
  * Structure, text and tables only. Deliberately absent, each for its own

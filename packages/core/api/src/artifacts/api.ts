@@ -89,25 +89,14 @@ export const ARTIFACT_PREVIEW_IMAGE_LIMIT = 512 * 1024;
 /**
  * A snapshot of the artifact as the viewer just saw it, WITH its data.
  *
- * ## Data safety — read before widening who may call this
+ * ## Data safety
  *
- * Unlike the layout preview, this is captured after the artifact's queries
- * resolved, so it contains whatever the capturing viewer was allowed to see.
- * That makes it per-viewer state that happens to be stored on a shared-shaped
- * row.
- *
- * It is correct today only because of a property that holds by circumstance and
- * not by construction: artifacts are viewer-owned, so the only person who can
- * read the row is the person whose data is in the snapshot. When org-tier
- * sharing lands — the `owner` column already anticipates it — that stops being
- * true, and this preview would leak one member's numbers into another member's
- * gallery.
- *
- * At that point it must either move to per-viewer storage keyed by (artifact,
- * viewer), or be excluded from any view its capturer does not own. The LAYOUT
- * preview, written at create time from a render with no data in it, is the one
- * that stays shareable — which is why the column carries both kinds rather than
- * being replaced by this one.
+ * Captured after the artifact's queries resolved, so it contains whatever the
+ * capturing viewer was allowed to see. It is stored apart from the shared
+ * layout preview, and only the artifact's creator may write it or is shown it.
+ * A call from anyone else is answered `{ stored: false }`; every other member
+ * keeps seeing the layout preview, which is derived from the source with no
+ * data in it.
  */
 const SetArtifactPreviewPayload = Schema.Struct({
   /** Markup from the settled render. Sanitized by the handler through the same

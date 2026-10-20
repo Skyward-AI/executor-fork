@@ -213,6 +213,28 @@ describe("createD1ExecutorDb", () => {
     await sqlite.close();
   });
 
+  it("adds the preview_capture artifact column to a database that predates it", async () => {
+    const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
+    const { db } = makeRecordingD1(sqlite.client);
+    const first = await createD1ExecutorDb(db, undefined);
+    await first.close();
+    await sqlite.client.execute(`ALTER TABLE "artifact" DROP COLUMN "preview_capture"`);
+    await sqlite.client.execute(
+      `UPDATE private_executor_cloudflare_schema_fingerprint
+       SET fingerprint = 'stale'
+       WHERE id = 'runtime-schema'`,
+    );
+
+    const second = await createD1ExecutorDb(db, undefined);
+    await second.close();
+
+    const columns = await sqlite.client.execute(`PRAGMA table_info("artifact")`);
+    const names = columns.rows.map((row) => String(row.name));
+    expect(names).toEqual(expect.arrayContaining(["preview_capture"]));
+
+    await sqlite.close();
+  });
+
   it("converges safely when concurrent opens see the same stale fingerprint", async () => {
     const sqlite = await createSqliteTestFumaDb({ tables: collectTables() });
     const { db } = makeRecordingD1(sqlite.client);
