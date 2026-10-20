@@ -5,8 +5,8 @@
 //
 // An artifact IS the stored JSX source plus the title/description an agent
 // matches against ("show me my active users dashboard"). Owner-scoped like a
-// connection: created at the `user` tier, readable through the same owner
-// policy, so org-tier sharing later needs no new machinery.
+// connection, and created at the `org` tier so every member of the tenant can
+// read it through the same owner policy.
 // ---------------------------------------------------------------------------
 
 import { Option, Schema, type Effect } from "effect";
