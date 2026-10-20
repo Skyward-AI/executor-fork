@@ -1220,6 +1220,7 @@ const recordingAdmin = (calls: string[]): ExecutorAdmin => ({
     calls.push("getSubjectWithConnections");
     return Effect.succeed({ ...A_SUBJECT, connections: [] });
   },
+  artifactSummary: () => Effect.succeed(null),
 });
 
 describe("admin users reads — the ?email= filter is applied before the read", () => {

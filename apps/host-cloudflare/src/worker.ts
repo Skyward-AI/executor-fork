@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { setQuickJSModuleLoader } from "@executor-js/runtime-quickjs";
+import type { AdminArtifactSummary } from "@executor-js/sdk";
 
 import { makeCloudflareApp, reconcileInternalIntegrationsOnce } from "./app";
 import {
@@ -10,6 +11,7 @@ import {
   type CloudflareEnv,
 } from "./config";
 import { mcpResourceFromPath } from "./mcp/resource";
+import { artifactSummaryFor } from "./unfurl";
 
 // Workers cannot fetch the default QuickJS .wasm, so every QuickJS user in this
 // script (the fetch handlers and the MCP Durable Objects) resolves the
@@ -34,6 +36,8 @@ export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
 //     reaches it through a `services` binding with `entrypoint: "ExecutorInternal"`.
 //     It builds its OWN app from a config marked `trustedInternal`; nothing in
 //     `env` or in a request can switch the public door into that mode.
+//   - `ExecutorUnfurl` is a narrow read-only RPC door, reached the same way with
+//     `entrypoint: "ExecutorUnfurl"`: link previews for internal services.
 // ---------------------------------------------------------------------------
 
 interface Serve {
@@ -96,6 +100,19 @@ const serveRequest = async (
 export class ExecutorInternal extends WorkerEntrypoint<CloudflareEnv> {
   override fetch(request: Request): Promise<Response> {
     return serveRequest(request, this.env, this.ctx, resolveInternal);
+  }
+}
+
+/**
+ * The link-preview door. Reachable only through a `services` binding with
+ * `entrypoint: "ExecutorUnfurl"`; it has no route and takes no identity. It
+ * returns the title, description and last edit of an artifact in this
+ * deployment's tenant, whoever owns it, and never the source, bindings,
+ * previews, owner or subject. Read-only.
+ */
+export class ExecutorUnfurl extends WorkerEntrypoint<CloudflareEnv> {
+  artifactSummary(id: string): Promise<AdminArtifactSummary | null> {
+    return artifactSummaryFor(this.env, id);
   }
 }
 

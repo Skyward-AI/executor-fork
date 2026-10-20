@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { type InStatement } from "@libsql/client";
+import { withQueryContext } from "@executor-js/fumadb/query";
 
 import {
   ADMIN_DEFAULT_PAGE_SIZE,
@@ -958,6 +959,136 @@ describe("platform view — the joined read does not fan out per subject", () =>
         expect(names).not.toContain("other-tenant");
         expect(names).not.toContain("shared");
         expect(names.sort()).toEqual(["b-personal", "personal", "work"]);
+      }),
+    ),
+  );
+});
+
+describe("platform view — admin.artifactSummary", () => {
+  const SOURCE = "export default function App() { return <div>SECRET-source</div>; }";
+
+  const insertArtifact = (
+    db: SqliteTestFumaDb,
+    row: {
+      readonly tenant: string;
+      readonly owner: "org" | "user";
+      readonly subject: string;
+      readonly id: string;
+      readonly title: string;
+      readonly description: string | null;
+      readonly updatedAtMs: number;
+    },
+  ) =>
+    Effect.promise(() =>
+      withQueryContext(db.db, { tenant: row.tenant, subject: row.subject }).create("artifact", {
+        tenant: row.tenant,
+        owner: row.owner,
+        subject: row.subject,
+        id: row.id,
+        title: row.title,
+        description: row.description,
+        code: SOURCE,
+        bindings: null,
+        preview: "<div>SECRET-preview</div>",
+        preview_capture: null,
+        compiled_fingerprint: null,
+        compiled_js: null,
+        compiled_css: null,
+        created_by: row.subject === "" ? null : row.subject,
+        created_at: new Date(row.updatedAtMs),
+        updated_at: new Date(row.updatedAtMs),
+      }),
+    );
+
+  const seedArtifacts = (db: SqliteTestFumaDb) =>
+    Effect.gen(function* () {
+      yield* insertArtifact(db, {
+        tenant: TENANT,
+        owner: "org",
+        subject: "",
+        id: "art_orgone",
+        title: "Revenue",
+        description: "Monthly revenue",
+        updatedAtMs: 1_700_000_000_000,
+      });
+      yield* insertArtifact(db, {
+        tenant: TENANT,
+        owner: "user",
+        subject: SUBJECT_B,
+        id: "art_personalb",
+        title: "B's scratchpad",
+        description: null,
+        updatedAtMs: 1_700_000_060_000,
+      });
+      yield* insertArtifact(db, {
+        tenant: OTHER_TENANT,
+        owner: "org",
+        subject: "",
+        id: "art_elsewhere",
+        title: "Other tenant",
+        description: "Not ours",
+        updatedAtMs: 1_700_000_120_000,
+      });
+    });
+
+  it.effect("summarises an org artifact", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seedArtifacts(db);
+        const admin = yield* requireAdmin(yield* makePlatformExecutor(db, { subject: null }));
+
+        expect(yield* admin.artifactSummary("art_orgone")).toEqual({
+          title: "Revenue",
+          description: "Monthly revenue",
+          updatedAt: 1_700_000_000_000,
+        });
+      }),
+    ),
+  );
+
+  it.effect("summarises another member's personal artifact, and only its summary fields", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seedArtifacts(db);
+        const admin = yield* requireAdmin(yield* makePlatformExecutor(db, { subject: SUBJECT_A }));
+
+        const summary = yield* admin.artifactSummary("art_personalb");
+
+        expect(summary).toEqual({
+          title: "B's scratchpad",
+          description: null,
+          updatedAt: 1_700_000_060_000,
+        });
+        expect(JSON.stringify(summary)).not.toContain("SECRET");
+      }),
+    ),
+  );
+
+  it.effect("returns null for an unknown id and for another tenant's artifact", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seedArtifacts(db);
+        const admin = yield* requireAdmin(yield* makePlatformExecutor(db, { subject: null }));
+
+        expect(yield* admin.artifactSummary("art_missing")).toBe(null);
+        expect(yield* admin.artifactSummary("art_elsewhere")).toBe(null);
+      }),
+    ),
+  );
+
+  it.effect("cannot write artifacts", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        yield* seedArtifacts(db);
+        const executor = yield* makePlatformExecutor(db, { subject: SUBJECT_A });
+
+        yield* expectWriteRefused(executor.artifacts.save({ title: "Intruder", code: SOURCE }));
+        yield* expectWriteRefused(
+          executor.artifacts.rename({ id: "art_orgone", title: "Renamed" }),
+        );
+
+        const admin = yield* requireAdmin(executor);
+        expect((yield* admin.artifactSummary("art_orgone"))?.title).toBe("Revenue");
       }),
     ),
   );

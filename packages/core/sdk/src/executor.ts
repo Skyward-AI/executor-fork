@@ -678,6 +678,15 @@ const normalizeAdminPaging = (
   return { limit, offset };
 };
 
+/** The title, description and last edit of one artifact: a link preview, and
+ *  nothing that could render or run it. */
+export interface AdminArtifactSummary {
+  readonly title: string;
+  readonly description: string | null;
+  /** Epoch ms of the last edit. */
+  readonly updatedAt: number;
+}
+
 export interface ExecutorAdmin {
   /** One page of subjects under the tenant, oldest first (stable: ties break on
    *  `external_id`). ALWAYS bounded: no arguments means
@@ -719,6 +728,16 @@ export interface ExecutorAdmin {
   readonly getSubjectWithConnections: (
     externalId: string,
   ) => Effect.Effect<AdminSubjectWithConnections | null, StorageFailure>;
+  /**
+   * The preview fields of one artifact by id, whichever tier or subject owns
+   * it, or `null` when the tenant has none. Selects only title, description and
+   * `updated_at`: no source, bindings, compiled output, preview, owner or
+   * subject ever leaves storage. Ids are random, so a shared id is only
+   * theoretical; the most recently edited row wins.
+   */
+  readonly artifactSummary: (
+    id: string,
+  ) => Effect.Effect<AdminArtifactSummary | null, StorageFailure>;
 }
 
 export interface ExecutorDb {
@@ -7859,12 +7878,34 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return { ...subject, connections };
         });
 
+      const artifactSummary = (
+        id: string,
+      ): Effect.Effect<AdminArtifactSummary | null, StorageFailure> =>
+        platformCore
+          .findFirst("artifact", {
+            where: (b: AnyCb) => b("id", "=", id),
+            orderBy: [["updated_at", "desc"]],
+            select: ["title", "description", "updated_at"],
+          })
+          .pipe(
+            Effect.map((row) =>
+              row === null
+                ? null
+                : {
+                    title: row.title,
+                    description: row.description ?? null,
+                    updatedAt: new Date(row.updated_at).getTime(),
+                  },
+            ),
+          );
+
       return {
         listSubjects,
         getSubject,
         listSubjectConnections,
         listSubjectsWithConnections,
         getSubjectWithConnections,
+        artifactSummary,
       };
     };
 
