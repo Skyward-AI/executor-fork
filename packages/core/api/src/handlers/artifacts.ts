@@ -90,6 +90,16 @@ export const ArtifactsHandlers = HttpApiBuilder.group(ExecutorApi, "artifacts", 
         }),
       ),
     )
+    .handle("share", ({ params: path }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const shared = yield* executor.artifacts.share({ id: path.artifactId });
+          yield* notifyArtifactUsage("updated");
+          return artifactToResponse(shared);
+        }),
+      ),
+    )
     .handle("remove", ({ params: path }) =>
       capture(
         Effect.gen(function* () {

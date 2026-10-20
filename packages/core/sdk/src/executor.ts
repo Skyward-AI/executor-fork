@@ -98,6 +98,7 @@ import {
   type ArtifactSummary,
   type RemoveArtifactInput,
   type RenameArtifactInput,
+  type ShareArtifactInput,
   type SaveArtifactInput,
   type SetArtifactPreviewInput,
 } from "./artifact";
@@ -530,6 +531,16 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     ) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
     readonly rename: (
       input: RenameArtifactInput,
+    ) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
+    /**
+     * Move one of the caller's personal (`user`-tier) artifacts to the org
+     * tier, so every member can open it by id. The creator is recorded and the
+     * artifact stays in the caller's list. Fails with `ArtifactNotFoundError`
+     * for an id that is not the caller's own personal artifact (unknown,
+     * another member's, or already shared).
+     */
+    readonly share: (
+      input: ShareArtifactInput,
     ) => Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure>;
     readonly remove: (input: RemoveArtifactInput) => Effect.Effect<void, StorageFailure>;
     /** Upgrade the stored preview to a snapshot of a settled render. Touches
@@ -6713,9 +6724,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       (b: AnyCb) =>
         b("id", "=", id);
 
+    // A member's gallery lists their own artifacts: personal rows (the policy
+    // already narrows those to this subject), org rows they created, and org
+    // rows with no recorded creator so legacy ones are not lost. Org rows by
+    // other members stay reachable by id, just not listed. A pure-org executor
+    // has no subject to filter by.
     const artifactsList = (): Effect.Effect<readonly ArtifactSummary[], StorageFailure> =>
       core
         .findMany("artifact", {
+          ...(subject == null
+            ? {}
+            : {
+                where: (b: AnyCb) =>
+                  b.or(
+                    b("owner", "=", "user"),
+                    b("created_by", "=", subject),
+                    b.isNull("created_by"),
+                  ),
+              }),
           // Newest first. `id` breaks ties so two artifacts sharing an
           // `updated_at` millisecond list in a repeatable order rather than
           // whatever the storage engine happens to return; which of the two
@@ -6851,6 +6877,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           bindings: input.bindings ?? null,
           preview: input.preview ?? null,
           ...compiledColumns(yield* compileArtifactSource(input.code)),
+          created_by: subject,
           created_at: now,
           updated_at: now,
         });
@@ -6896,6 +6923,24 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
         const set = { title: input.title, updated_at: new Date() };
+        yield* core.updateMany("artifact", { where, set });
+        return rowToArtifact({ ...existing, ...set });
+      });
+
+    // Only the owning subject can find a `user` row through the bound policy,
+    // so no explicit subject check is needed. The update policy permits moving
+    // a row to the org partition, so this is an in-place update rather than a
+    // copy.
+    const artifactsShare = (
+      input: ShareArtifactInput,
+    ): Effect.Effect<Artifact, ArtifactNotFoundError | StorageFailure> =>
+      Effect.gen(function* () {
+        const where = (b: AnyCb) => b.and(b("id", "=", input.id), b("owner", "=", "user"));
+        const existing = yield* core.findFirst("artifact", { where });
+        if (!existing) {
+          return yield* new ArtifactNotFoundError({ id: ArtifactId.make(input.id) });
+        }
+        const set = { owner: "org", subject: ORG_SUBJECT, created_by: existing.subject };
         yield* core.updateMany("artifact", { where, set });
         return rowToArtifact({ ...existing, ...set });
       });
@@ -7895,6 +7940,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         rename: artifactsRename,
         remove: artifactsRemove,
         setPreview: artifactsSetPreview,
+        share: artifactsShare,
       },
       pendingApprovals,
       execute,

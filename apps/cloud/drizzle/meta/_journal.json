@@ -162,6 +162,13 @@
       "when": 1792307915126,
       "tag": "0022_productive_anthem",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792505978902,
+      "tag": "0023_groovy_titania",
+      "breakpoints": true
     }
   ]
 }

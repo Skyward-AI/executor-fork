@@ -218,6 +218,10 @@ export interface RenameArtifactInput {
   readonly title: string;
 }
 
+export interface ShareArtifactInput {
+  readonly id: string;
+}
+
 export interface RemoveArtifactInput {
   readonly id: string;
 }

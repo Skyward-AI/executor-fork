@@ -304,6 +304,8 @@ export const renameArtifact = ExecutorApiClient.mutation("artifacts", "rename");
 
 export const removeArtifact = ExecutorApiClient.mutation("artifacts", "remove");
 
+export const shareArtifact = ExecutorApiClient.mutation("artifacts", "share");
+
 /**
  * Upgrade an artifact's gallery preview to a snapshot of a settled render.
  *

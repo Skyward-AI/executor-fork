@@ -434,6 +434,11 @@ export const coreTables = defineTables({
       compiled_fingerprint: nullableTextColumn("compiled_fingerprint"),
       compiled_js: nullableTextColumn("compiled_js"),
       compiled_css: nullableTextColumn("compiled_css"),
+      // The subject that first saved it. Org rows carry the empty-string
+      // `subject` sentinel, so this is what lets a gallery list only the
+      // caller's own artifacts. Null for org rows saved before it existed
+      // (creator unknown); never rewritten by an overwrite or rename.
+      created_by: nullableTextColumn("created_by"),
       created_at: dateColumn("created_at"),
       updated_at: dateColumn("updated_at"),
     },
