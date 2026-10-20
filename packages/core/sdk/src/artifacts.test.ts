@@ -273,7 +273,7 @@ describe("executor.artifacts", () => {
 
       const saved = yield* alice.artifacts.save({ title: "Revenue", code: CODE });
 
-      expect((yield* bob.artifacts.list()).map((a) => a.title)).toEqual(["Revenue"]);
+      expect(yield* bob.artifacts.list()).toEqual([]);
       expect((yield* bob.artifacts.get(saved.id)).code).toBe(CODE);
 
       yield* bob.artifacts.rename({ id: saved.id, title: "Revenue by month" });
@@ -300,6 +300,175 @@ describe("executor.artifacts", () => {
       expect(yield* outsider.artifacts.list()).toEqual([]);
     }).pipe(Effect.scoped),
   );
+
+  describe("sharing", () => {
+    const makeMember = (
+      config: Parameters<typeof createExecutor>[0] & {
+        readonly testDb: { readonly db: Parameters<typeof withQueryContext>[0] };
+      },
+      name: string,
+    ) =>
+      Effect.gen(function* () {
+        const member = yield* createExecutor({
+          ...config,
+          subject: Subject.make(name),
+          db: withQueryContext(config.testDb.db, { tenant: String(config.tenant), subject: name }),
+        });
+        yield* Effect.addFinalizer(() => member.close().pipe(Effect.ignore));
+        return member;
+      });
+
+    // Insert a row straight through the storage layer, bypassing `save`, so a
+    // test can pin the tier and creator that `save` would never produce.
+    const insertRow = (
+      config: { readonly testDb: { readonly db: Parameters<typeof withQueryContext>[0] } },
+      context: { readonly tenant: string; readonly subject: string },
+      row: {
+        readonly id: string;
+        readonly owner: "org" | "user";
+        readonly subject: string;
+        readonly createdBy: string | null;
+      },
+    ) =>
+      Effect.promise(() =>
+        withQueryContext(config.testDb.db, context).create("artifact", {
+          tenant: context.tenant,
+          owner: row.owner,
+          subject: row.subject,
+          id: row.id,
+          title: "Legacy",
+          description: null,
+          code: CODE,
+          bindings: null,
+          preview: null,
+          compiled_fingerprint: null,
+          compiled_js: null,
+          compiled_css: null,
+          created_by: row.createdBy,
+          created_at: new Date(),
+          updated_at: new Date(),
+        }),
+      );
+
+    it.effect("lists only the artifacts the member created, yet others can still open them", () =>
+      Effect.gen(function* () {
+        const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+        const bob = yield* makeMember(config, "bob");
+
+        const saved = yield* alice.artifacts.save({ title: "Revenue", code: CODE });
+
+        expect((yield* alice.artifacts.list()).map((a) => a.id)).toEqual([saved.id]);
+        expect(yield* bob.artifacts.list()).toEqual([]);
+        expect((yield* bob.artifacts.get(saved.id)).code).toBe(CODE);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("lists an org artifact with no recorded creator for every member", () =>
+      Effect.gen(function* () {
+        const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+        const bob = yield* makeMember(config, "bob");
+        yield* insertRow(
+          config,
+          { tenant: String(config.tenant), subject: "bob" },
+          { id: "art_legacy", owner: "org", subject: "", createdBy: null },
+        );
+
+        expect((yield* alice.artifacts.list()).map((a) => a.id)).toEqual(["art_legacy"]);
+        expect((yield* bob.artifacts.list()).map((a) => a.id)).toEqual(["art_legacy"]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("an executor with no subject lists every org artifact", () =>
+      Effect.gen(function* () {
+        const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+        const orgOnly = yield* createExecutor({
+          ...config,
+          subject: undefined,
+          db: withQueryContext(config.testDb.db, {
+            tenant: String(config.tenant),
+            subject: null,
+          }),
+        });
+        yield* Effect.addFinalizer(() => orgOnly.close().pipe(Effect.ignore));
+
+        const saved = yield* alice.artifacts.save({ title: "Revenue", code: CODE });
+
+        expect((yield* orgOnly.artifacts.list()).map((a) => a.id)).toEqual([saved.id]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("sharing a personal artifact makes it openable by others but not listed", () =>
+      Effect.gen(function* () {
+        const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+        const bob = yield* makeMember(config, "bob");
+        yield* insertRow(
+          config,
+          { tenant: String(config.tenant), subject: "test-subject" },
+          { id: "art_mine", owner: "user", subject: "test-subject", createdBy: null },
+        );
+
+        const before = yield* Effect.result(bob.artifacts.get("art_mine"));
+        expect(
+          Result.isFailure(before) && Predicate.isTagged("ArtifactNotFoundError")(before.failure),
+        ).toBe(true);
+        expect((yield* alice.artifacts.get("art_mine")).owner).toBe("user");
+
+        const shared = yield* alice.artifacts.share({ id: "art_mine" });
+
+        expect(shared.owner).toBe("org");
+        expect((yield* bob.artifacts.get("art_mine")).owner).toBe("org");
+        expect((yield* bob.artifacts.list()).map((a) => a.id)).toEqual([]);
+        expect((yield* alice.artifacts.list()).map((a) => a.id)).toEqual(["art_mine"]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("another member cannot share a personal artifact", () =>
+      Effect.gen(function* () {
+        const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+        const bob = yield* makeMember(config, "bob");
+        yield* insertRow(
+          config,
+          { tenant: String(config.tenant), subject: "test-subject" },
+          { id: "art_mine", owner: "user", subject: "test-subject", createdBy: null },
+        );
+
+        const result = yield* Effect.result(bob.artifacts.share({ id: "art_mine" }));
+
+        expect(
+          Result.isFailure(result) && Predicate.isTagged("ArtifactNotFoundError")(result.failure),
+        ).toBe(true);
+        expect((yield* alice.artifacts.get("art_mine")).owner).toBe("user");
+        expect((yield* alice.artifacts.list()).map((a) => a.id)).toEqual(["art_mine"]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("sharing an artifact that is already org-tier fails", () =>
+      Effect.gen(function* () {
+        const executor = yield* makeTestExecutor();
+        const saved = yield* executor.artifacts.save({ title: "Revenue", code: CODE });
+
+        const result = yield* Effect.result(executor.artifacts.share({ id: saved.id }));
+
+        expect(
+          Result.isFailure(result) && Predicate.isTagged("ArtifactNotFoundError")(result.failure),
+        ).toBe(true);
+      }),
+    );
+
+    it.effect("overwriting another member's artifact does not change who lists it", () =>
+      Effect.gen(function* () {
+        const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+        const bob = yield* makeMember(config, "bob");
+        const saved = yield* alice.artifacts.save({ title: "Revenue", code: CODE });
+
+        yield* bob.artifacts.save({ id: saved.id, title: "Revenue v2", code: CODE });
+        yield* bob.artifacts.rename({ id: saved.id, title: "Revenue v3" });
+
+        expect((yield* alice.artifacts.list()).map((a) => a.title)).toEqual(["Revenue v3"]);
+        expect(yield* bob.artifacts.list()).toEqual([]);
+      }).pipe(Effect.scoped),
+    );
+  });
 
   describe("previews", () => {
     const MARKUP = '<div class="p-4"><h2>Revenue</h2></div>';

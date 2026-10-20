@@ -222,6 +222,7 @@ export {
   type ArtifactSummary,
   type SaveArtifactInput,
   type RenameArtifactInput,
+  type ShareArtifactInput,
   type RemoveArtifactInput,
   type SetArtifactPreviewInput,
 } from "./artifact";

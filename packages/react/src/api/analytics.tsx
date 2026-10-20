@@ -137,6 +137,7 @@ export interface AnalyticsEvents {
   // ── Artifacts page ───────────────────────────────────────────────────────
   artifact_opened: { surface: "list" | "deep_link" };
   artifact_renamed: { success: boolean };
+  artifact_shared: { success: boolean };
   artifact_removed: { success: boolean };
 
   // ── API keys ─────────────────────────────────────────────────────────────

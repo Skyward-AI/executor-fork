@@ -17,6 +17,7 @@ import {
   artifactsOptimisticAtom,
   removeArtifactOptimistic,
   renameArtifactOptimistic,
+  shareArtifact,
 } from "../api/atoms";
 import { artifactWriteKeys } from "../api/reactivity-keys";
 import { createHttpShellHost } from "../api/shell-host";
@@ -54,6 +55,7 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
   useAtomMount(artifactsOptimisticAtom);
   const doRename = useAtomSet(renameArtifactOptimistic, { mode: "promiseExit" });
   const doRemove = useAtomSet(removeArtifactOptimistic, { mode: "promiseExit" });
+  const doShare = useAtomSet(shareArtifact, { mode: "promiseExit" });
   const navigate = useNavigate();
 
   // Start the renderer chunk now, in parallel with the row's own fetch, rather
@@ -98,6 +100,26 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
     trackEvent("artifact_renamed", { success: Exit.isSuccess(exit) });
     if (Exit.isFailure(exit)) toast.error("Couldn't rename the artifact. Try again.");
   };
+
+  const handleShare = async () => {
+    const exit = await doShare({
+      params: { artifactId: props.artifactId },
+      reactivityKeys: artifactWriteKeys,
+    });
+    trackEvent("artifact_shared", { success: Exit.isSuccess(exit) });
+    if (Exit.isFailure(exit)) {
+      toast.error("Couldn't share the artifact. Try again.");
+      return;
+    }
+    refresh();
+    toast.success("Shared. Anyone in your organization can open this link.");
+  };
+
+  const handleCopyLink = () =>
+    navigator.clipboard.writeText(globalThis.window.location.href).then(
+      () => toast.success("Link copied"),
+      () => toast.error("Couldn't copy the link. Copy it from the address bar."),
+    );
 
   const handleRemove = async () => {
     const exit = await doRemove({
@@ -145,6 +167,40 @@ export function ArtifactDetailPage(props: { readonly artifactId: ArtifactId }) {
                 </Button>
               }
             />
+            {artifact.value.owner === "user" ? (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button type="button" variant="ghost" size="sm" className="text-muted-foreground">
+                    Share
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent size="sm">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Share {artifact.value.title} with your organization?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Everyone in your organization will be able to open, edit and delete it from
+                      this link. It won't appear in their artifact list.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => void handleShare()}>Share</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() => void handleCopyLink()}
+              >
+                Copy link
+              </Button>
+            )}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button

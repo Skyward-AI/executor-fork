@@ -155,6 +155,15 @@ export const ArtifactsApi = HttpApiGroup.make("artifacts")
     }),
   )
   .add(
+    // Moves one of the caller's personal artifacts to the org tier. Another
+    // member's, an unknown id and an already-shared one all read as 404.
+    HttpApiEndpoint.post("share", "/artifacts/:artifactId/share", {
+      params: ArtifactParams,
+      success: ArtifactResponse,
+      error: [InternalError, ArtifactNotFound],
+    }),
+  )
+  .add(
     HttpApiEndpoint.delete("remove", "/artifacts/:artifactId", {
       params: ArtifactParams,
       success: Schema.Struct({ removed: Schema.Boolean }),
