@@ -1,9 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate, Result } from "effect";
+import { withQueryContext } from "@executor-js/fumadb/query";
 
-import { makeTestExecutor } from "./testing";
+import { createExecutor } from "./executor";
+import { makeTestExecutor, makeTestWorkspaceHarness } from "./testing";
 import type { ArtifactBinding } from "./artifact";
-import { ConnectionName, IntegrationSlug } from "./ids";
+import { ConnectionName, IntegrationSlug, Subject, Tenant } from "./ids";
 
 const binding = (integration: string, owner: "user" | "org", name: string): ArtifactBinding => ({
   integration: IntegrationSlug.make(integration),
@@ -34,7 +36,7 @@ describe("executor.artifacts", () => {
         code: CODE,
       });
       expect(saved.id).not.toBe("");
-      expect(saved.owner).toBe("user");
+      expect(saved.owner).toBe("org");
       expect(saved.title).toBe("Active users");
       expect(saved.description).toBe("Daily active users over time");
       expect(saved.code).toBe(CODE);
@@ -123,7 +125,7 @@ describe("executor.artifacts", () => {
       expect(listed).toEqual([
         {
           id: saved.id,
-          owner: "user",
+          owner: "org",
           title: "Active users",
           description: "described",
           preview: null,
@@ -250,14 +252,53 @@ describe("executor.artifacts", () => {
     }),
   );
 
-  it.effect("an executor with no subject cannot save a user artifact", () =>
+  it.effect("an executor with no subject can save an artifact", () =>
     Effect.gen(function* () {
-      // Pure-org executors (host request paths with no member bound) have no
-      // user partition to file a personal artifact into.
       const executor = yield* makeTestExecutor({ subject: null });
-      const result = yield* Effect.result(executor.artifacts.save({ title: "Orphan", code: CODE }));
-      expect(Result.isFailure(result)).toBe(true);
+      const saved = yield* executor.artifacts.save({ title: "Shared", code: CODE });
+      expect(saved.owner).toBe("org");
+      expect((yield* executor.artifacts.list()).map((a) => a.title)).toEqual(["Shared"]);
     }),
+  );
+
+  it.effect("another member of the tenant can open, rename and delete a saved artifact", () =>
+    Effect.gen(function* () {
+      const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+      const bob = yield* createExecutor({
+        ...config,
+        subject: Subject.make("bob"),
+        db: withQueryContext(config.testDb.db, { tenant: String(config.tenant), subject: "bob" }),
+      });
+      yield* Effect.addFinalizer(() => bob.close().pipe(Effect.ignore));
+
+      const saved = yield* alice.artifacts.save({ title: "Revenue", code: CODE });
+
+      expect((yield* bob.artifacts.list()).map((a) => a.title)).toEqual(["Revenue"]);
+      expect((yield* bob.artifacts.get(saved.id)).code).toBe(CODE);
+
+      yield* bob.artifacts.rename({ id: saved.id, title: "Revenue by month" });
+      expect((yield* alice.artifacts.get(saved.id)).title).toBe("Revenue by month");
+
+      yield* bob.artifacts.remove({ id: saved.id });
+      expect(yield* alice.artifacts.list()).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("another tenant cannot see a saved artifact", () =>
+    Effect.gen(function* () {
+      const { config, executor: alice } = yield* makeTestWorkspaceHarness();
+      const outsider = yield* createExecutor({
+        ...config,
+        tenant: Tenant.make("other-tenant"),
+        subject: Subject.make("mallory"),
+        db: withQueryContext(config.testDb.db, { tenant: "other-tenant", subject: "mallory" }),
+      });
+      yield* Effect.addFinalizer(() => outsider.close().pipe(Effect.ignore));
+
+      yield* alice.artifacts.save({ title: "Revenue", code: CODE });
+
+      expect(yield* outsider.artifacts.list()).toEqual([]);
+    }).pipe(Effect.scoped),
   );
 
   describe("previews", () => {

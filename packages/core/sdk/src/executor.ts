@@ -6705,9 +6705,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // ------------------------------------------------------------------
 
     // Reads take no explicit owner: the owner policy already narrows to the
-    // rows this binding may see (org rows plus this subject's own), which is
-    // exactly "visible to the bound owner scope" and stays correct unchanged
-    // when org-tier sharing lands. Writes are always `user` tier in v1.
+    // rows this binding may see (org rows plus this subject's own). New
+    // artifacts are created at the `org` tier, so every member of the tenant
+    // can open, edit and delete them; older `user`-tier rows stay personal.
     const artifactById =
       (id: string): CoreWhere =>
       (b: AnyCb) =>
@@ -6836,9 +6836,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           yield* core.updateMany("artifact", { where, set });
           return rowToArtifact({ ...existing, ...set });
         }
-        yield* requireUserSubject("user");
         const keys = yield* Effect.try({
-          try: () => ownedKeys("user"),
+          try: () => ownedKeys("org"),
           catch: (cause) => storageFailureFromUnknown("invalid owner", cause),
         });
         const created = yield* core.create("artifact", {

@@ -393,9 +393,8 @@ export const coreTables = defineTables({
 
   // A saved generative-UI artifact — the JSX source a model produced, kept so
   // it can be re-rendered later and matched by title/description from any MCP
-  // client. Owner-scoped like every other personal row: artifacts are created
-  // at the `user` tier, and the `org` tier the table already carries is what
-  // sharing will use later without new machinery.
+  // client. Owner-scoped like every other row: new artifacts are created at
+  // the `org` tier, so they are shared with the whole tenant.
   artifact: ownedExecutorTable(
     "artifact",
     {
