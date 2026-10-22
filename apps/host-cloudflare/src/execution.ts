@@ -32,13 +32,19 @@ import { makeCloudflarePlugins } from "./plugins";
 export { makeExecutionStack } from "@executor-js/api/server";
 export { EngineDecoratorNoop };
 
+const workerLoader = (): WorkerLoader | undefined => (env as { LOADER?: WorkerLoader }).LOADER;
+
 export const CloudflareCodeExecutorProvider: Layer.Layer<CodeExecutorProvider> = Layer.sync(
   CodeExecutorProvider,
   () => {
-    const loader = (env as { LOADER?: WorkerLoader }).LOADER;
+    const loader = workerLoader();
     return loader ? makeDynamicWorkerExecutor({ loader }) : makeQuickJsExecutor();
   },
 );
+
+/** The code runtime `CloudflareCodeExecutorProvider` picks, for the MCP log line. */
+export const cloudflareCodeRuntime = (): "dynamic-worker" | "quickjs" =>
+  workerLoader() ? "dynamic-worker" : "quickjs";
 
 export const makeCloudflarePluginsProvider = (
   config: CloudflareConfig,
