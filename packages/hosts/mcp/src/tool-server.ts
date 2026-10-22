@@ -90,6 +90,7 @@ import {
 import { MCP_ORG_WRITE_ACCESS_HEADER } from "./seams";
 import { passthroughInstructions, SEARCH_INVOKE_SKILL } from "./passthrough-tools";
 import type { McpToolMode } from "./browser-approval";
+import { logToolCall, trackEngineRun, type McpCodeRuntime } from "./tool-call-log";
 
 // ---------------------------------------------------------------------------
 // Workers-compatible JSON Schema validator (replaces Ajv which uses new Function())
@@ -209,6 +210,11 @@ type SharedMcpServerConfig = {
    * Invoke is marked destructive for client approval. Requires `tools`.
    */
   readonly mode?: McpToolMode;
+  /**
+   * The code runtime behind the engine, reported on the per-call log line.
+   * Defaults to `sandbox` when the host does not say.
+   */
+  readonly codeRuntime?: McpCodeRuntime;
   /**
    * Ranks `search`. Passed explicitly because a caller that supplies a prebuilt
    * `engine` gives this server no way to reach the engine's own provider, and
@@ -1655,7 +1661,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const resumeWithLifecycle = (executionId: string, response: ResumeResponse) =>
       Effect.gen(function* () {
         yield* onResumeStarted(executionId);
-        return yield* engine.resume(executionId, response);
+        return yield* trackEngineRun(codeRuntime, engine.resume(executionId, response));
       }).pipe(Effect.ensuring(onResumeSettled(executionId)));
 
     const localExecutionAlreadySettled = (executionId: string): Effect.Effect<boolean> =>
@@ -1726,15 +1732,22 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         ),
     ).pipe(Effect.withSpan("mcp.host.create_server"));
 
+    const codeRuntime = config.codeRuntime ?? "sandbox";
+    const clientLabel = (): string | undefined => {
+      const client = server.server.getClientVersion();
+      return client ? `${client.name}/${client.version}` : undefined;
+    };
+
     const executeWithNativeElicitation = (
       code: string,
       extra: McpRequestJoinKeys,
     ): Effect.Effect<McpToolResult, E> =>
-      engine
-        .execute(code, {
+      trackEngineRun(
+        codeRuntime,
+        engine.execute(code, {
           onElicitation: makeMcpElicitationHandler(server, extra.requestId, debugLog),
-        })
-        .pipe(Effect.map(toMcpResult));
+        }),
+      ).pipe(Effect.map(toMcpResult));
 
     const executeCode = (
       code: string,
@@ -1754,7 +1767,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         if (elicitationMode.mode === "native") {
           return yield* executeWithNativeElicitation(code, extra);
         }
-        const outcome = yield* engine.executeWithPause(code);
+        const outcome = yield* trackEngineRun(codeRuntime, engine.executeWithPause(code));
         debugLog("execute.paused_flow_result", {
           status: outcome.status,
           executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
@@ -1880,7 +1893,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         if (elicitationMode.mode === "native") {
           return yield* executeWithNativeElicitation(boundCode, extra);
         }
-        const outcome = yield* engine.executeWithPause(boundCode);
+        const outcome = yield* trackEngineRun(codeRuntime, engine.executeWithPause(boundCode));
         debugLog("execute_action.paused_flow_result", {
           status: outcome.status,
           executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
@@ -2081,7 +2094,10 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           unanswerable = ctx.request;
           return Effect.succeed({ action: "decline" as const });
         };
-        const outcome = yield* engine.call(String(address), args, { onElicitation });
+        const outcome = yield* trackEngineRun(
+          "direct",
+          engine.call(String(address), args, { onElicitation }),
+        );
         if (unanswerable) return elicitationUnsupportedResult(String(address), unanswerable);
         return toPassthroughResult(outcome);
       }).pipe(
@@ -2104,7 +2120,11 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         config.tools,
         config.connections,
         config.integrations,
-        executePassthroughCall,
+        (address, args, extra) =>
+          logToolCall(
+            { tool: "invoke", client: clientLabel },
+            executePassthroughCall(address, args, extra),
+          ),
         config.toolDiscoveryProvider ?? defaultToolDiscoveryProvider,
       );
     }
@@ -2117,7 +2137,14 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             description,
             inputSchema: { code: z.string().trim().min(1) },
           },
-          ({ code }, extra) => runToolEffect(executeCode(code, extra), extra),
+          ({ code }, extra) =>
+            runToolEffect(
+              logToolCall(
+                { tool: "execute", client: clientLabel, codeLength: code.length },
+                executeCode(code, extra),
+              ),
+              extra,
+            ),
         ),
       ).pipe(
         Effect.withSpan("mcp.host.register_tool", {
@@ -2189,14 +2216,17 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             },
             ({ executionId, action, content: rawContent, persist }, extra) =>
               runToolEffect(
-                resumeExecution(
-                  executionId,
-                  {
-                    action,
-                    content: parseJsonContent(rawContent),
-                    ...(persist === undefined ? {} : { meta: { persist } }),
-                  },
-                  extra,
+                logToolCall(
+                  { tool: "resume", client: clientLabel },
+                  resumeExecution(
+                    executionId,
+                    {
+                      action,
+                      content: parseJsonContent(rawContent),
+                      ...(persist === undefined ? {} : { meta: { persist } }),
+                    },
+                    extra,
+                  ),
                 ),
                 extra,
               ),
@@ -2216,7 +2246,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             },
           },
           ({ executionId }, extra) =>
-            runToolEffect(resumeAfterBrowserApproval(executionId, extra), extra),
+            runToolEffect(
+              logToolCall(
+                { tool: "resume", client: clientLabel },
+                resumeAfterBrowserApproval(executionId, extra),
+              ),
+              extra,
+            ),
         );
       }).pipe(
         Effect.withSpan("mcp.host.register_tool", {
@@ -2257,9 +2293,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
                 "Search this integration's tools; empty query lists all. Run results with execute.",
               inputSchema: { query: z.string().optional() },
             },
-            ({ query }, extra) =>
-              runToolEffect(
-                executeCode(searchNamespaceCode(integration, query), extra).pipe(
+            ({ query }, extra) => {
+              const code = searchNamespaceCode(integration, query);
+              return runToolEffect(
+                logToolCall(
+                  { tool: "search_namespace", client: clientLabel, codeLength: code.length },
+                  executeCode(code, extra),
+                ).pipe(
                   Effect.withSpan("mcp.host.tool.namespace_search", {
                     attributes: {
                       "mcp.tool.name": `search_${integration}`,
@@ -2268,7 +2308,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
                   }),
                 ),
                 extra,
-              ),
+              );
+            },
           );
         }
       }).pipe(
@@ -2874,7 +2915,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             },
           },
           ({ code, artifactId }, extra) =>
-            runToolEffect(executeCodeFromApp(code, artifactId, extra), extra),
+            runToolEffect(
+              logToolCall(
+                { tool: "execute_action", client: clientLabel, codeLength: code.length },
+                executeCodeFromApp(code, artifactId, extra),
+              ),
+              extra,
+            ),
         );
 
         executeActionResumeTool = registerAppTool(
@@ -2898,10 +2945,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           },
           ({ executionId, action, content: rawContent }, extra) =>
             runToolEffect(
-              resumeExecution(
-                executionId,
-                { action, content: parseJsonContent(rawContent) },
-                extra,
+              logToolCall(
+                { tool: "resume", client: clientLabel },
+                resumeExecution(
+                  executionId,
+                  { action, content: parseJsonContent(rawContent) },
+                  extra,
+                ),
               ),
               extra,
             ),

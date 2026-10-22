@@ -29,7 +29,11 @@ import type { ResumeResponse } from "@executor-js/execution";
 
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "../config";
 import { createD1ExecutorDb } from "../db/d1";
-import { makeCloudflareExecutionStackLayer, makeExecutionStack } from "../execution";
+import {
+  cloudflareCodeRuntime,
+  makeCloudflareExecutionStackLayer,
+  makeExecutionStack,
+} from "../execution";
 
 // ---------------------------------------------------------------------------
 // Cloudflare (self-host) MCP Session Durable Object — the host-cloudflare
@@ -162,6 +166,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       const artifactOrigin = sessionMeta.webOrigin ?? config.webBaseUrl;
       const mcpServer = yield* createExecutorMcpServer({
         engine,
+        codeRuntime: cloudflareCodeRuntime(),
         artifacts: executor.artifacts,
         connections: executor.connections,
         tools: executor.tools,
