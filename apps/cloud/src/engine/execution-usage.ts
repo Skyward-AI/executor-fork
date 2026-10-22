@@ -12,6 +12,10 @@ export const withExecutionUsageTracking = <E extends Cause.YieldableError>(
     engine
       .execute(code, options)
       .pipe(Effect.tap(() => Effect.sync(() => trackUsage(organizationId)))),
+  call: (address, args, options) =>
+    engine
+      .call(address, args, options)
+      .pipe(Effect.tap(() => Effect.sync(() => trackUsage(organizationId)))),
   // `options` MUST be forwarded: it carries `autoApprove`, and dropping it
   // silently turned every auto-approved execution back into a paused one.
   executeWithPause: (code, options) =>

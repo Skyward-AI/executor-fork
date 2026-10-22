@@ -1425,6 +1425,7 @@ const startSchemaElicitationMcpHarness = (): Promise<McpHarness> =>
     // The fake forks nothing, so there is no sandbox fiber to end.
     shutdown: Effect.void,
     execute: () => Effect.succeed({ result: null }),
+    call: () => Effect.succeed({ result: null }),
     executeWithPause: () =>
       Effect.succeed(
         makePausedResult(

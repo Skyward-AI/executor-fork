@@ -507,6 +507,22 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
   ) => Effect.Effect<ExecuteResult, E>;
 
   /**
+   * Call one tool by address in the host, with no sandbox. The result has the
+   * shape `execute` returns for `return await tools.<path>(args)`: the tool's
+   * `ToolResult` on success, or a `tool_error` for a declined approval or a
+   * plugin defect.
+   *
+   * Required, not optional, for the same reason as `shutdown`: a decorator
+   * that dropped it would silently remove billing, gating, or analytics from
+   * direct calls.
+   */
+  readonly call: (
+    address: string,
+    args: unknown,
+    options: { readonly onElicitation: ElicitationHandler },
+  ) => Effect.Effect<ExecuteResult, E>;
+
+  /**
    * Execute code, intercepting the first elicitation as a pause point.
    * Use this when the host doesn't support inline elicitation.
    * Returns either a completed result or a paused execution that can be resumed.
@@ -874,6 +890,39 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     return result;
   });
 
+  const callTool = Effect.fn("mcp.execute")(function* (
+    address: string,
+    args: unknown,
+    options: { readonly onElicitation: ElicitationHandler },
+  ) {
+    yield* Effect.annotateCurrentSpan({ "mcp.execute.mode": "direct" });
+    const toolPaths: string[] = [];
+    const invoker = makeExecutorToolInvoker(executor, {
+      invokeOptions: { onElicitation: options.onElicitation },
+      onConnectedToolCall: (path) => toolPaths.push(path),
+    });
+    const path = address.startsWith("tools.") ? address.slice("tools.".length) : address;
+    const result = yield* invoker.invoke({ path, args }).pipe(
+      Effect.map(
+        (value): ExecuteResult => ({
+          result: value,
+          logs: [],
+          ...(toolPaths.length === 0 ? {} : { toolPaths }),
+        }),
+      ),
+      Effect.catchTag("ExecutionToolError", (error) =>
+        Effect.succeed<ExecuteResult>({
+          result: null,
+          error: error.message,
+          errorKind: "tool_error",
+          logs: [],
+        }),
+      ),
+    );
+    yield* annotateExecuteOutcome(result);
+    return result;
+  });
+
   /**
    * End this engine's sandbox fibers, and WAIT for them to finish unwinding.
    *
@@ -898,6 +947,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
 
   return {
     execute: runInlineExecution,
+    call: callTool,
     executeWithPause: startPausableExecution,
     resume: resumeExecution,
     shutdown,

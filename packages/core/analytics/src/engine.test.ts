@@ -25,6 +25,8 @@ const makeRecorder = () => {
   };
 };
 
+const declineAll = () => Effect.succeed({ action: "decline" as const });
+
 const completedResult = (error?: string): ExecutionResult => ({
   status: "completed",
   result: { result: error ? null : "ok", ...(error ? { error } : {}) },
@@ -49,11 +51,13 @@ const pausedResult: ExecutionResult = {
 const makeFakeEngine = (
   outcomes: Partial<{
     execute: Effect.Effect<{ result: unknown; error?: string }, FakeExecutionError>;
+    call: Effect.Effect<{ result: unknown; error?: string }, FakeExecutionError>;
     executeWithPause: Effect.Effect<ExecutionResult, FakeExecutionError>;
     resume: Effect.Effect<ExecutionResult | null, FakeExecutionError>;
   }>,
 ): ExecutionEngine<FakeExecutionError> => ({
   execute: () => outcomes.execute ?? Effect.succeed({ result: "ok" }),
+  call: () => outcomes.call ?? Effect.succeed({ result: "ok" }),
   executeWithPause: () => outcomes.executeWithPause ?? Effect.succeed(completedResult()),
   resume: () => outcomes.resume ?? Effect.succeed(null),
   getPausedExecution: () => Effect.succeed(null),
@@ -140,6 +144,33 @@ describe("withExecutionAnalytics", () => {
         {
           name: "execution_completed",
           properties: { ok: true, plane: "mcp", toolkit: false },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("records each direct tool call as one execution", () =>
+    Effect.gen(function* () {
+      const recorder = makeRecorder();
+      const ok = withExecutionAnalytics(makeFakeEngine({}), recorder.analytics, {
+        plane: "mcp",
+        toolkit: false,
+      });
+      yield* ok.call("tools.github.org.main.getRepo", {}, { onElicitation: declineAll });
+      const failed = withExecutionAnalytics(
+        makeFakeEngine({ call: Effect.succeed({ result: null, error: "declined" }) }),
+        recorder.analytics,
+        { plane: "mcp", toolkit: false },
+      );
+      yield* failed.call("tools.github.org.main.getRepo", {}, { onElicitation: declineAll });
+      expect(recorder.events).toEqual([
+        {
+          name: "execution_completed",
+          properties: { ok: true, plane: "mcp", toolkit: false },
+        },
+        {
+          name: "execution_completed",
+          properties: { ok: false, plane: "mcp", toolkit: false },
         },
       ]);
     }),

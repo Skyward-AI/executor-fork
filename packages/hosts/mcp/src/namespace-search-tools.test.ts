@@ -24,6 +24,7 @@ const makeRecordingEngine = (): {
     executed,
     engine: {
       execute: () => Effect.succeed({ result: "default" }),
+      call: () => Effect.succeed({ result: "default" }),
       executeWithPause: (code) =>
         Effect.sync(() => {
           executed.push(code);

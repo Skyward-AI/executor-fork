@@ -311,13 +311,17 @@ const extractNamespace = (path: string): string => {
  * because it would require an `integrations.list()` lookup on every invocation.
  * Callers that already know the integration kind can annotate at their own span.
  */
+export interface ExecutorToolInvoker extends SandboxToolInvoker {
+  invoke(input: { path: string; args: unknown }): Effect.Effect<unknown, ExecutionToolError>;
+}
+
 export const makeExecutorToolInvoker = (
   executor: Executor,
   options: {
     readonly invokeOptions: InvokeOptions;
     readonly onConnectedToolCall?: (path: string) => void;
   },
-): SandboxToolInvoker => ({
+): ExecutorToolInvoker => ({
   invoke: Effect.fn("mcp.tool.dispatch")(function* ({ path, args }) {
     yield* Effect.annotateCurrentSpan({
       "mcp.tool.name": path,
