@@ -45,6 +45,7 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   resume?: ExecutionEngine<E>["resume"];
 }): ExecutionEngine<E> => ({
   execute: () => Effect.succeed({ result: "default" }),
+  call: () => Effect.succeed({ result: "default" }),
   executeWithPause:
     overrides.executeWithPause ??
     (() => Effect.succeed({ status: "completed", result: { result: "default" } })),

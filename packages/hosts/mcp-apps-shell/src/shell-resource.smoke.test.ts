@@ -21,6 +21,7 @@ import { MCP_APPS_SHELL_DOCUMENT_MARKER } from "./shell-asset-path";
 
 const stubEngine: ExecutionEngine<never> = {
   execute: () => Effect.succeed({ result: "ok" }),
+  call: () => Effect.succeed({ result: "ok" }),
   executeWithPause: () => Effect.succeed({ status: "completed", result: { result: "ok" } }),
   resume: () => Effect.succeed(null),
   isExecutionSettled: undefined,

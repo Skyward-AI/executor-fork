@@ -339,12 +339,14 @@ class PlatformEngineUnavailable extends Data.TaggedError("PlatformEngineUnavaila
  * actually reach — `getPausedExecution`, via `GET /executions/:id` — answers
  * null (a 404), honestly: the platform view owns no executions. The paused
  * counters answer the same empty story for any future reader. Everything else
- * (execute, resume, the MCP tool description) exists to satisfy the service
+ * (execute, call, resume, the MCP tool description) exists to satisfy the service
  * shape, sits behind the middleware's safe-request gate, and dies if reached.
  */
 const readOnlyExecutionEngine: ExecutionEngine<Cause.YieldableError> = {
   // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unreachable behind the middleware's safe-request gate; reaching it is a wiring bug, not a typed product outcome
   execute: () => Effect.die(new PlatformEngineUnavailable({ member: "execute" })),
+  // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unreachable behind the middleware's safe-request gate; reaching it is a wiring bug, not a typed product outcome
+  call: () => Effect.die(new PlatformEngineUnavailable({ member: "call" })),
   // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unreachable behind the middleware's safe-request gate; reaching it is a wiring bug, not a typed product outcome
   executeWithPause: () => Effect.die(new PlatformEngineUnavailable({ member: "executeWithPause" })),
   // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: unreachable behind the middleware's safe-request gate; reaching it is a wiring bug, not a typed product outcome

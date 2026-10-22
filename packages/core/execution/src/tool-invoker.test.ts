@@ -2030,3 +2030,151 @@ describe("pause/resume with multiple elicitations", () => {
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// engine.call: one tool call in the host, with no sandbox
+// ---------------------------------------------------------------------------
+
+const sandboxForbidden: CodeExecutor = {
+  execute: () => Effect.die("engine.call must not start a sandbox"),
+};
+
+const declineAll = () => Effect.succeed(ElicitationResponse.make({ action: "decline" }));
+
+const toolFile = {
+  _tag: "ToolFile",
+  name: "pixel.png",
+  mimeType: "image/png",
+  encoding: "base64",
+  data: "iVBORw0KGgo=",
+  byteLength: 8,
+} as const;
+
+const binaryPlugin = makeTestPlugin({
+  pluginId: "binary-test",
+  integration: "files",
+  tools: [
+    {
+      name: "download",
+      description: "Download a file",
+      inputJsonSchema: EmptyInputJson,
+      validator: EmptyValidator,
+      handler: () => Effect.succeed(toolFile),
+    },
+    {
+      name: "bytes",
+      description: "Read raw bytes",
+      inputJsonSchema: EmptyInputJson,
+      validator: EmptyValidator,
+      handler: () => Effect.succeed(new Uint8Array([1, 2, 3])),
+    },
+  ],
+});
+
+describe("engine.call", () => {
+  it.effect("returns the tool's ToolResult and the connected tool path without a sandbox", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor: sandboxForbidden });
+
+      const result = yield* engine.call(
+        "tools.github.org.main.getRepositoryDetails",
+        { owner: "octocat", repo: "hello" },
+        { onElicitation: acceptAll },
+      );
+
+      expect(result).toEqual({
+        result: { ok: true, data: { defaultBranch: "main" } },
+        logs: [],
+        toolPaths: ["github.org.main.getRepositoryDetails"],
+      });
+    }),
+  );
+
+  it.effect("returns tool_blocked as a ToolResult when a block policy matches", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      yield* executor.policies.create({ owner: "org", pattern: "github.*", action: "block" });
+      const engine = createExecutionEngine({ executor, codeExecutor: sandboxForbidden });
+
+      const result = yield* engine.call(
+        "tools.github.org.main.getRepositoryDetails",
+        { owner: "octocat", repo: "hello" },
+        { onElicitation: acceptAll },
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.toolPaths).toBeUndefined();
+      expect(result.result).toMatchObject({
+        ok: false,
+        error: {
+          code: "tool_blocked",
+          message: "Tool blocked by policy: github.org.main.getRepositoryDetails",
+        },
+      });
+    }),
+  );
+
+  it.effect("reports a declined approval as a tool_error with the sandbox's message", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor: sandboxForbidden });
+
+      const result = yield* engine.call(
+        "tools.crm.org.main.createContact",
+        { email: "a@example.com" },
+        { onElicitation: declineAll },
+      );
+
+      expect(result).toEqual({
+        result: null,
+        error:
+          'Tool "crm.org.main.createContact" requires approval but the request was declined by the user.',
+        errorKind: "tool_error",
+        logs: [],
+      });
+    }),
+  );
+
+  it.effect("keeps a plugin defect opaque behind a correlation id", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([unmarkedErrorPlugin] as const);
+      yield* provision(executor as never, [
+        { pluginId: "unmarked-error-test", integration: "unmarked" },
+      ]);
+      const engine = createExecutionEngine({ executor, codeExecutor: sandboxForbidden });
+
+      const result = yield* engine.call(
+        "tools.unmarked.org.main.explode",
+        {},
+        { onElicitation: acceptAll },
+      );
+
+      expect(result.result).toBeNull();
+      expect(result.errorKind).toBe("tool_error");
+      expect(result.error).toMatch(/^Internal tool error \[[0-9a-f]{8}\]$/);
+      expect(result.error).not.toContain("internal detail");
+    }),
+  );
+
+  it.effect("returns a ToolFile and raw bytes unchanged", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([binaryPlugin] as const);
+      yield* provision(executor as never, [{ pluginId: "binary-test", integration: "files" }]);
+      const engine = createExecutionEngine({ executor, codeExecutor: sandboxForbidden });
+
+      const file = yield* engine.call(
+        "tools.files.org.main.download",
+        {},
+        {
+          onElicitation: acceptAll,
+        },
+      );
+      expect(file.result).toEqual({ ok: true, data: toolFile });
+
+      const bytes = yield* engine.call("files.org.main.bytes", {}, { onElicitation: acceptAll });
+      expect(bytes.result).toEqual({ ok: true, data: new Uint8Array([1, 2, 3]) });
+      expect(bytes.toolPaths).toEqual(["files.org.main.bytes"]);
+    }),
+  );
+});

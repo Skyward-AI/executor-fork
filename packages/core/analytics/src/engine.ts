@@ -49,6 +49,11 @@ export const withExecutionAnalytics = <E extends Cause.YieldableError>(
         Effect.tap((result) => completed(!result.error)),
         Effect.tapError(() => completed(false)),
       ),
+    call: (address, args, options) =>
+      engine.call(address, args, options).pipe(
+        Effect.tap((result) => completed(!result.error)),
+        Effect.tapError(() => completed(false)),
+      ),
     executeWithPause: (code, options) =>
       engine.executeWithPause(code, options).pipe(
         Effect.tap(recordOutcome),

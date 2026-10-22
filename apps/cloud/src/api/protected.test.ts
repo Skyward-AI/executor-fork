@@ -6,6 +6,7 @@ import { withExecutionUsageTracking } from "../engine/execution-usage";
 const makeBaseEngine = (): ExecutionEngine =>
   ({
     execute: () => Effect.succeed({ result: "ok", logs: [] }),
+    call: () => Effect.succeed({ result: "ok", logs: [] }),
     executeWithPause: () =>
       Effect.succeed({
         status: "completed",

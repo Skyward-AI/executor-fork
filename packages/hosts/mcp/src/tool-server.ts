@@ -88,11 +88,7 @@ import {
   type BindableConnection,
 } from "./artifact-bindings";
 import { MCP_ORG_WRITE_ACCESS_HEADER } from "./seams";
-import {
-  passthroughCallCode,
-  passthroughInstructions,
-  SEARCH_INVOKE_SKILL,
-} from "./passthrough-tools";
+import { passthroughInstructions, SEARCH_INVOKE_SKILL } from "./passthrough-tools";
 import type { McpToolMode } from "./browser-approval";
 
 // ---------------------------------------------------------------------------
@@ -2046,8 +2042,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
 
     // --- passthrough call path ---
     //
-    // Invoke runs one generated call through the existing execution engine.
-    // The client approves the generic destructive tool; upstream prompts use
+    // Invoke calls the tool directly through the execution engine, in the
+    // host, without a sandbox. The client approves the generic destructive tool; upstream prompts use
     // native elicitation, or fail with an actionable result when unsupported.
     const executePassthroughCall = (
       address: ToolAddress,
@@ -2085,9 +2081,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           unanswerable = ctx.request;
           return Effect.succeed({ action: "decline" as const });
         };
-        const outcome = yield* engine.execute(passthroughCallCode(address, args), {
-          onElicitation,
-        });
+        const outcome = yield* engine.call(String(address), args, { onElicitation });
         if (unanswerable) return elicitationUnsupportedResult(String(address), unanswerable);
         return toPassthroughResult(outcome);
       }).pipe(

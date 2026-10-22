@@ -25,6 +25,7 @@ class UpstreamDownError extends Data.TaggedError("UpstreamDownError")<{
 // the two came back. A blocked decision never reaches the engine at all.
 const engineStub: ExecutionEngine = {
   execute: () => Effect.succeed({ result: "ran" }),
+  call: () => Effect.succeed({ result: "ran" }),
   executeWithPause: () => Effect.succeed({ status: "completed", result: { result: "ran" } }),
   resume: () => Effect.succeed(null),
   getPausedExecution: () => Effect.succeed(null),
@@ -48,6 +49,27 @@ const runExecute = (limiter: ReturnType<typeof makeExecutionRateLimiter>) =>
       onElicitation: () => Effect.die("elicitation is not exercised here"),
     }),
   );
+
+describe("execution rate limiter: direct tool calls", () => {
+  it("counts and blocks a direct call like an execute", async () => {
+    const limiter = makeExecutionRateLimiter(countingIncrement([1, 11]), {
+      limit: 10,
+      isExempt: () => Effect.succeed(false),
+    });
+    const engine = limiter.decorate(ORG, engineStub);
+    const call = () =>
+      Effect.runPromise(
+        engine.call(
+          "tools.github.org.main.getRepo",
+          {},
+          { onElicitation: () => Effect.die("elicitation is not exercised here") },
+        ),
+      );
+
+    expect(await call()).toEqual({ result: "ran" });
+    expect(await call()).toEqual({ result: null, error: RATE_LIMIT_BLOCKED_MESSAGE });
+  });
+});
 
 describe("execution rate limiter — paid exemption", () => {
   it("allows executions under the cap without consulting the exemption", async () => {

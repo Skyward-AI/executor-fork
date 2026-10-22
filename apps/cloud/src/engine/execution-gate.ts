@@ -5,7 +5,8 @@
 // Usage is tracked to Autumn after every execution (execution-usage.ts), but
 // nothing ever CHECKED the balance before running, so a free-tier org could run
 // unbounded executions past its quota. This gate consults
-// `AutumnService.checkExecutionBalance` before `execute` / `executeWithPause`.
+// `AutumnService.checkExecutionBalance` before `execute` / `call` /
+// `executeWithPause`.
 // `resume` is never gated: a paused execution already consumed its quota slot
 // when it started, and blocking resume would strand approved work forever.
 //
@@ -68,7 +69,7 @@ export type GateDecision =
   | { readonly blocked: true; readonly error: { readonly message: string } };
 
 /**
- * Wrap an engine so `decide` runs before `execute` / `executeWithPause`. A
+ * Wrap an engine so `decide` runs before `execute` / `call` / `executeWithPause`. A
  * blocked decision short-circuits to a descriptive `ExecuteResult.error`
  * (which `formatExecuteResult` renders as a clean `isError` MCP tool result)
  * WITHOUT invoking the inner engine — so a blocked execution is neither run
@@ -86,6 +87,14 @@ export const withPreExecutionGate = <E extends Cause.YieldableError>(
         decision.blocked
           ? Effect.succeed({ result: null, error: decision.error.message })
           : engine.execute(code, options),
+    ),
+  call: (address, args, options) =>
+    Effect.flatMap(
+      decide,
+      (decision): Effect.Effect<EngineExecuteResult, E> =>
+        decision.blocked
+          ? Effect.succeed({ result: null, error: decision.error.message })
+          : engine.call(address, args, options),
     ),
   executeWithPause: (code, options) =>
     Effect.flatMap(

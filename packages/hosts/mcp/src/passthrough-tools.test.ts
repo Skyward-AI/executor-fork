@@ -4,8 +4,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type * as Cause from "effect/Cause";
 
-import type { ExecutionEngine } from "@executor-js/execution";
+import { createExecutionEngine, type ExecutionEngine } from "@executor-js/execution";
 import {
+  createExecutor,
+  definePlugin,
+  tool,
   ToolAddress,
   IntegrationSlug,
   ConnectionName,
@@ -13,9 +16,9 @@ import {
   type Tool,
   type ToolSchemaView,
 } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { readToolMode } from "./browser-approval";
-import { passthroughCallCode } from "./passthrough-tools";
 import {
   createExecutorMcpServer,
   McpPassthroughUnavailableError,
@@ -86,16 +89,21 @@ const toolPort = (
     }),
 });
 
-/** A stub engine that records every executed code string and answers with a
- *  fixed value, so a test can prove a passthrough call became the expected
- *  single-call code and took `execute` (never `executeWithPause`). */
+/** A stub engine that records every direct call and executed code string and
+ *  answers with a fixed value, so a test can prove a passthrough call became
+ *  one direct `call` (never `execute` or `executeWithPause`). */
 const makeRecordingEngine = (result: unknown = { ok: true, data: { hello: "world" } }) => {
-  const executed: string[] = [];
+  const executed: unknown[] = [];
   let pausedCalls = 0;
   const engine: ExecutionEngine = {
     execute: (code) =>
       Effect.sync(() => {
         executed.push(code);
+        return { result };
+      }),
+    call: (address, args) =>
+      Effect.sync(() => {
+        executed.push({ address, args });
         return { result };
       }),
     executeWithPause: () =>
@@ -138,11 +146,6 @@ const withClient = async <E extends Cause.YieldableError>(
   }
 };
 
-const decodeJsonString = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.String));
-const decodeJsonRecord = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
-);
-
 const decodeSearchItems = Schema.decodeUnknownSync(
   Schema.Struct({ items: Schema.Array(Schema.Struct({ id: Schema.String })) }),
 );
@@ -162,37 +165,6 @@ const CATALOG: readonly Tool[] = [
   projection({ integration: "github", name: "issues.list" }),
   projection({ integration: "linear", name: "issueCreate", requiresApproval: true }),
 ];
-
-describe("passthrough catalog", () => {
-  it("emits exactly one awaited tool call with the whole address as one string literal", () => {
-    expect(passthroughCallCode("tools.github.org.main.issues.create", { title: "hi" })).toBe(
-      'return await tools["github.org.main.issues.create"]({"title":"hi"});',
-    );
-    expect(passthroughCallCode("linear.org.main.issueCreate", undefined)).toBe(
-      'return await tools["linear.org.main.issueCreate"]({});',
-    );
-    // `then` is reserved by every sandbox proxy; as part of one key it is
-    // just text, so such a tool stays callable.
-    expect(passthroughCallCode("tools.svc.org.main.items.then", {})).toBe(
-      'return await tools["svc.org.main.items.then"]({});',
-    );
-  });
-
-  it("keeps a hostile tool segment as data, never as code", () => {
-    // An OpenAPI spec controls its tool paths (`x-executor-toolPath`), so a
-    // segment can contain anything. It must land inside a JSON string.
-    const hostile = 'x"](await tools.victim.org.main.destroy({}))["';
-    const code = passthroughCallCode(`tools.evil.org.main.${hostile}`, {});
-    // Structural proof the payload never escapes the string literal: the
-    // source is exactly `return await tools[<one JSON string>](<JSON>);`, and
-    // that one string decodes back to the raw address.
-    const shape = /^return await tools\[("(?:[^"\\]|\\.)*")\]\((\{.*\})\);$/s.exec(code);
-    expect(shape).not.toBeNull();
-    expect(decodeJsonString(shape![1]!)).toBe(`evil.org.main.${hostile}`);
-    // And the call's argument is the JSON we passed, untouched by the address.
-    expect(decodeJsonRecord(shape![2]!)).toEqual({});
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Wire flags
@@ -468,7 +440,7 @@ describe("passthrough mode server", () => {
           arguments: { tool: found?.id, arguments: {} },
         });
         expect(invoked.isError ?? false).toBe(false);
-        expect(executed).toEqual(['return await tools["bench.org.main.record9999"]({});']);
+        expect(executed).toEqual([{ address: "tools.bench.org.main.record9999", args: {} }]);
         const page = await client.callTool({
           name: "search",
           arguments: { query: "bench", limit: 2 },
@@ -549,7 +521,10 @@ describe("passthrough mode server", () => {
         });
         expect(unknown.isError).toBe(true);
         expect(recording.executed).toEqual([
-          'return await tools["executor.mcp.addServer"]({"endpoint":"https://blog.mcp.cloudflare.com/mcp"});',
+          {
+            address: "executor.mcp.addServer",
+            args: { endpoint: "https://blog.mcp.cloudflare.com/mcp" },
+          },
         ]);
       },
     );
@@ -622,7 +597,7 @@ describe("passthrough mode server", () => {
     });
   });
 
-  it("runs a call as one execute of single-call code, never a pause", async () => {
+  it("runs a call as one direct tool call, never code or a pause", async () => {
     const recording = makeRecordingEngine({ ok: true, data: { number: 7 } });
     await withClient(
       {
@@ -636,7 +611,7 @@ describe("passthrough mode server", () => {
           arguments: { tool: "tools.github.org.main.issues.create", arguments: { title: "hello" } },
         });
         expect(recording.executed).toEqual([
-          'return await tools["github.org.main.issues.create"]({"title":"hello"});',
+          { address: "tools.github.org.main.issues.create", args: { title: "hello" } },
         ]);
         expect(recording.pausedCalls()).toBe(0);
         // The tool's `data` is the result: nothing sits between the tool and
@@ -760,7 +735,7 @@ describe("passthrough mode server", () => {
     seen: string[],
   ): ExecutionEngine => ({
     ...makeRecordingEngine().engine,
-    execute: (_code, options) =>
+    call: (_address, _args, options) =>
       Effect.gen(function* () {
         for (const { source, request } of requests) {
           const answer = yield* options.onElicitation({
@@ -1029,5 +1004,119 @@ describe("passthrough mode server", () => {
       createExecutorMcpServer({ engine, mode: "passthrough" }).pipe(Effect.flip),
     );
     expect(outcome).toBeInstanceOf(McpPassthroughUnavailableError);
+  });
+});
+
+describe("passthrough invoke on a real engine", () => {
+  const pixel = {
+    _tag: "ToolFile",
+    name: "pixel.png",
+    mimeType: "image/png",
+    encoding: "base64",
+    data: "iVBORw0KGgo=",
+    byteLength: 8,
+  } as const;
+
+  const emptyInput = Schema.toStandardSchemaV1(Schema.toStandardJSONSchemaV1(Schema.Struct({})));
+
+  const pixelsPlugin = definePlugin(() => ({
+    id: "pixels-test" as const,
+    storage: () => ({}),
+    staticIntegrations: () => [
+      {
+        id: "pixels",
+        kind: "in-memory" as const,
+        name: "Pixels",
+        tools: [
+          tool({
+            name: "download",
+            description: "Download a pixel",
+            inputSchema: emptyInput,
+            execute: () => Effect.succeed(pixel),
+          }),
+          tool({
+            name: "explode",
+            description: "Fail with an internal detail",
+            inputSchema: emptyInput,
+            execute: () => Effect.die("postgres://secret@internal"),
+          }),
+        ],
+      },
+    ],
+  }));
+
+  const withRealEngine = async (fn: (client: Client) => Promise<void>) => {
+    const executor = await Effect.runPromise(
+      createExecutor(makeTestConfig({ plugins: [pixelsPlugin()] as const })),
+    );
+    const engine = createExecutionEngine({
+      executor,
+      codeExecutor: { execute: () => Effect.die("invoke must not start a sandbox") },
+    });
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: test helper must close the executor after async client assertions
+    try {
+      await withClient(
+        {
+          engine,
+          mode: "passthrough",
+          tools: executor.tools,
+          connections: executor.connections,
+          integrations: executor.integrations,
+        },
+        fn,
+      );
+    } finally {
+      await Effect.runPromise(executor.close());
+    }
+  };
+
+  it("calls the tool in the host and renders a file result as before", async () => {
+    await withRealEngine(async (client) => {
+      const result = await client.callTool({
+        name: "invoke",
+        arguments: { tool: "pixels.download", arguments: {} },
+      });
+      expect(result.isError ?? false).toBe(false);
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: [
+            "{",
+            '  "_tag": "ToolFile",',
+            '  "name": "pixel.png",',
+            '  "mimeType": "image/png",',
+            '  "encoding": "base64",',
+            '  "data": "iVBORw0KGgo=",',
+            '  "byteLength": 8',
+            "}",
+          ].join("\n"),
+        },
+      ]);
+      expect(result.structuredContent).toEqual({
+        status: "completed",
+        result: pixel,
+        logs: [],
+      });
+    });
+  });
+
+  it("renders a plugin defect as an opaque tool error", async () => {
+    await withRealEngine(async (client) => {
+      const result = await client.callTool({
+        name: "invoke",
+        arguments: { tool: "pixels.explode", arguments: {} },
+      });
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ text?: string }>)[0]?.text ?? "";
+      expect(text).toMatch(/^Error: Internal tool error \[[0-9a-f]{8}\]$/);
+      // The engine's typed tool_error (with the sandbox's empty logs), not
+      // the host's catch-all failure, which carries no logs.
+      expect(result.structuredContent).toEqual({
+        status: "error",
+        error: text.slice("Error: ".length),
+        logs: [],
+      });
+      expect(JSON.stringify(result)).not.toContain("postgres://");
+    });
   });
 });

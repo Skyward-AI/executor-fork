@@ -41,12 +41,14 @@ const expectDefined: <T>(value: T) => asserts value is NonNullable<T> = (value) 
 
 const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   execute?: ExecutionEngine<E>["execute"];
+  call?: ExecutionEngine<E>["call"];
   executeWithPause?: ExecutionEngine<E>["executeWithPause"];
   resume?: ExecutionEngine<E>["resume"];
   isExecutionSettled?: ExecutionEngine<E>["isExecutionSettled"];
   description?: string;
 }): ExecutionEngine<E> => ({
   execute: overrides.execute ?? (() => Effect.succeed({ result: "default" })),
+  call: overrides.call ?? (() => Effect.succeed({ result: "default" })),
   executeWithPause:
     overrides.executeWithPause ??
     (() => Effect.succeed({ status: "completed", result: { result: "default" } })),

@@ -63,6 +63,7 @@ it("preserves native elicitation mode when creating an in-memory MCP session", a
 /** A do-nothing engine: the eviction test drives session lifetime, not tools. */
 const makeIdleTestEngine = (): ExecutionEngine => ({
   execute: () => Effect.succeed({ result: "unused" }),
+  call: () => Effect.succeed({ result: "unused" }),
   executeWithPause: () => Effect.succeed({ status: "completed", result: { result: "unused" } }),
   resume: () => Effect.succeed(null),
   getPausedExecution: () => Effect.succeed(null),
@@ -558,6 +559,7 @@ const MCP_POST_HEADERS = {
 /** No code ever runs here: these requests are answered before any tool call. */
 const stubEngine: ExecutionEngine<never> = {
   execute: () => Effect.succeed({ result: "unused" }),
+  call: () => Effect.succeed({ result: "unused" }),
   executeWithPause: () => Effect.succeed({ status: "completed", result: { result: "unused" } }),
   resume: () => Effect.succeed(null),
   getPausedExecution: () => Effect.succeed(null),

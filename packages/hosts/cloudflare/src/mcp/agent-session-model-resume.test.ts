@@ -265,6 +265,7 @@ const makeEngine = (
   );
   const engine: ExecutionEngine<Cause.YieldableError> = {
     execute: () => Effect.succeed({ result: "execute-result" }),
+    call: () => Effect.succeed({ result: "execute-result" }),
     executeWithPause: () => Effect.succeed(completed("execute-result")),
     resume,
     getPausedExecution: () => Effect.succeed(null),
