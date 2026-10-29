@@ -28,6 +28,8 @@ export const JEV_MODEL = "jev-1.13.0";
 export const JEV_STATE_CHAR_BUDGET = 32_000 * 3;
 export const JEV_TOTAL_CHAR_BUDGET = 64_000 * 3;
 
+const JEV_GATEWAY_METADATA = JSON.stringify({ call_name: "jev", flow: "executor" });
+
 export class JevError extends Data.TaggedError("JevError")<{
   readonly message: string;
   readonly status?: number;
@@ -162,6 +164,7 @@ export const askJev = (options: AskJevOptions): Effect.Effect<readonly JevAnswer
     const request = HttpClientRequest.post(jevGatewayUrl(options.config)).pipe(
       HttpClientRequest.setHeaders({
         "Content-Type": "application/json",
+        "cf-aig-metadata": JEV_GATEWAY_METADATA,
         ...(token === undefined ? {} : { "cf-aig-authorization": `Bearer ${token}` }),
       }),
       HttpClientRequest.bodyJsonUnsafe({

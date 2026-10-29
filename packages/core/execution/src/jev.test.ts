@@ -114,6 +114,19 @@ describe("askJev", () => {
       expect(request?.headers["authorization"]).toBeUndefined();
     }));
 
+  it.effect("attributes the call in the AI Gateway logs with cf-aig-metadata", () =>
+    Effect.gen(function* () {
+      const { layer, requests } = yield* recordingClient();
+      yield* askJev({
+        config: CONFIG,
+        state: "s",
+        questions: [{ id: "a", instructions: "q" }],
+        httpClientLayer: layer,
+      });
+      const [request] = yield* Ref.get(requests);
+      expect(request?.headers["cf-aig-metadata"]).toBe('{"call_name":"jev","flow":"executor"}');
+    }));
+
   it.effect("resolves the token per call, so a rotated secret is picked up without redeploying", () =>
     Effect.gen(function* () {
       const { layer, requests } = yield* recordingClient();
