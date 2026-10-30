@@ -31,6 +31,10 @@ class TestExecutionError extends Data.TaggedError("TestExecutionError")<{
   readonly message: string;
 }> {}
 
+class TestTimeoutException extends Data.TaggedError("TimeoutException")<{
+  readonly message: string;
+}> {}
+
 const expectString: (value: unknown) => asserts value is string = (value) => {
   expect(typeof value).toBe("string");
 };
@@ -772,6 +776,28 @@ describe("MCP host server — native elicitation mode", () => {
       expect(structuredError).toMatch(/^Internal tool error \[[0-9a-f]{8}\]$/);
       expect(structuredError).not.toContain("secret internal detail");
       expect(result.isError).toBe(true);
+    });
+  });
+
+  it("execute tool names a retryable upstream timeout without leaking the message", async () => {
+    const engine = makeStubEngine({
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: test injects a timeout defect to verify classification
+      execute: () =>
+        Effect.die(new TestTimeoutException({ message: "https://api.example.com/?token=secret" })),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({ name: "execute", arguments: { code: "run" } });
+      const text = textOf(result);
+      expect(text).toMatch(
+        /^Error: Internal tool error \[[0-9a-f]{8}\]: upstream timeout\. Retry may succeed\.$/,
+      );
+      expect(text).not.toContain("secret");
+      expect(result.structuredContent).toMatchObject({
+        status: "error",
+        errorCategory: "upstream_timeout",
+        retryable: true,
+      });
     });
   });
 

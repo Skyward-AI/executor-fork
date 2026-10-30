@@ -90,6 +90,7 @@ import {
 import { MCP_ORG_WRITE_ACCESS_HEADER } from "./seams";
 import { passthroughInstructions, SEARCH_INVOKE_SKILL } from "./passthrough-tools";
 import type { McpToolMode } from "./browser-approval";
+import { classifyFailure, describeFailure } from "./failure-category";
 import { logToolCall, trackEngineRun, type McpCodeRuntime } from "./tool-call-log";
 
 // ---------------------------------------------------------------------------
@@ -862,8 +863,9 @@ const formatResumeApprovalRequired = (input: {
   },
 });
 
-const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
+const toMcpFailureResult = (cause: Cause.Cause<unknown>, toolPath?: string): McpToolResult => {
   const correlationId = newCorrelationId();
+  const failure = classifyFailure(cause);
   const defect = Cause.findDefect(cause);
   const nativeElicitationFailed =
     Result.isSuccess(defect) &&
@@ -872,19 +874,25 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   try {
     console.error(`[executor:mcp] execute defect correlation_id=${correlationId}`, {
       nativeElicitationFailed,
+      category: failure.category,
+      retryable: failure.retryable,
+      tool: toolPath,
+      cause: Cause.pretty(cause),
     });
   } catch {
     /* ignore logger failures */
   }
   const text = nativeElicitationFailed
     ? `Native elicitation transport failed [${correlationId}]. Reconnect the MCP client and try again.`
-    : `Internal tool error [${correlationId}]`;
+    : `Internal tool error [${correlationId}]${describeFailure(failure, toolPath)}`;
   return {
     content: [{ type: "text", text: `Error: ${text}` }],
     structuredContent: {
       status: "error",
       error: text,
       ...(nativeElicitationFailed ? { errorCode: "native_elicitation_transport_failed" } : {}),
+      ...(failure.category === "internal" ? {} : { errorCategory: failure.category }),
+      ...(failure.category === "internal" ? {} : { retryable: failure.retryable }),
     },
     isError: true,
   };
@@ -1329,6 +1337,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
     const boundary = <A extends McpToolResult, F>(
       effect: Effect.Effect<A, F>,
       extra: McpRequestJoinKeys,
+      toolPath?: string,
     ) =>
       Effect.runPromiseWith(context)(
         effect.pipe(
@@ -1336,7 +1345,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
             CurrentOrgWriteAccess,
             makeOrgWriteAccessState(requestOrgWriteAccess(extra)),
           ),
-          Effect.catchCause((cause) => Effect.succeed(toMcpFailureResult(cause))),
+          Effect.catchCause((cause) => Effect.succeed(toMcpFailureResult(cause, toolPath))),
         ),
       );
     yield* Effect.sync(() => {
@@ -1574,6 +1583,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
               return yield* run(address, checked.data, extra);
             }),
             extra,
+            id,
           ),
       );
     });
