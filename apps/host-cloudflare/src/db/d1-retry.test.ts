@@ -114,17 +114,39 @@ describe("retryTransientD1Call", () => {
     }),
   );
 
-  it.effect("gives up after five attempts and surfaces the original error", () =>
+  it.effect("rides out a 16 second outage of a read", () =>
     Effect.gen(function* () {
-      const { call, calls } = failingCall(
-        [INCIDENT_ERROR, INCIDENT_ERROR, INCIDENT_ERROR, INCIDENT_ERROR, INCIDENT_ERROR],
-        "rows",
-      );
+      const outage = { down: true };
+      const call = (): Promise<string> =>
+        outage.down
+          ? // oxlint-disable-next-line executor/no-promise-reject -- test double: a D1 call that rejects like the binding does
+            Promise.reject(bindingRejection(INCIDENT_ERROR))
+          : Promise.resolve("rows");
+
+      const fiber = yield* Effect.forkChild(Effect.exit(retryTransientD1Call("all", true, call)));
+      yield* TestClock.adjust(Duration.seconds(16));
+      outage.down = false;
+      yield* TestClock.adjust(Duration.seconds(4));
+      const exit = yield* Fiber.join(fiber);
+
+      expect(exit).toEqual(Exit.succeed("rows"));
+    }),
+  );
+
+  it.effect("gives up once the retry budget is spent and surfaces the original error", () =>
+    Effect.gen(function* () {
+      const calls = { count: 0 };
+      const call = (): Promise<string> => {
+        calls.count += 1;
+        // oxlint-disable-next-line executor/no-promise-reject -- test double: a D1 call that rejects like the binding does
+        return Promise.reject(bindingRejection(INCIDENT_ERROR));
+      };
 
       const exit = yield* runWithVirtualTime(retryTransientD1Call("all", true, call));
 
       expect(exit).toEqual(Exit.fail(new D1CallError({ cause: bindingRejection(INCIDENT_ERROR) })));
-      expect(calls.count).toBe(5);
+      expect(calls.count).toBeGreaterThan(5);
+      expect(calls.count).toBeLessThan(25);
     }),
   );
 
