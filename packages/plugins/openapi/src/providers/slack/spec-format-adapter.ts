@@ -12,6 +12,8 @@ const encodeJsonText = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 const TOKEN_INPUT = "token";
 
+const TIMESTAMP_INPUT = /^(?:ts|latest|oldest|(?:.+_)?ts(?:_.+)?)$/;
+
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -22,7 +24,42 @@ const detectsSlackSpecUrl = (url: string): boolean =>
 
 function withoutTokenParameter(parameters: unknown): unknown {
   if (!Array.isArray(parameters)) return parameters;
-  return parameters.filter((parameter) => !isRecord(parameter) || parameter.name !== TOKEN_INPUT);
+  return parameters
+    .filter((parameter) => !isRecord(parameter) || parameter.name !== TOKEN_INPUT)
+    .map(withStringTimestampParameter);
+}
+
+const isTimestampInput = (name: unknown, schema: unknown): schema is Record<string, unknown> =>
+  typeof name === "string" &&
+  TIMESTAMP_INPUT.test(name) &&
+  isRecord(schema) &&
+  schema.type === "number";
+
+function asStringSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const {
+    default: _default,
+    minimum: _minimum,
+    maximum: _maximum,
+    format: _format,
+    ...rest
+  } = schema;
+  return { ...rest, type: "string" };
+}
+
+function withStringTimestampParameter(parameter: unknown): unknown {
+  if (!isRecord(parameter) || !isTimestampInput(parameter.name, parameter.schema)) return parameter;
+  return { ...parameter, schema: asStringSchema(parameter.schema) };
+}
+
+function withStringTimestampProperties(schema: unknown): unknown {
+  if (!isRecord(schema) || !isRecord(schema.properties)) return schema;
+  const properties = Object.fromEntries(
+    Object.entries(schema.properties).map(([name, property]) => [
+      name,
+      isTimestampInput(name, property) ? asStringSchema(property) : property,
+    ]),
+  );
+  return { ...schema, properties };
 }
 
 function withoutTokenProperty(schema: unknown): unknown {
@@ -46,7 +83,9 @@ function withoutTokenBody(requestBody: unknown): unknown {
   const content = Object.fromEntries(
     Object.entries(requestBody.content).map(([mediaType, media]) => [
       mediaType,
-      isRecord(media) ? { ...media, schema: withoutTokenProperty(media.schema) } : media,
+      isRecord(media)
+        ? { ...media, schema: withStringTimestampProperties(withoutTokenProperty(media.schema)) }
+        : media,
     ]),
   );
   return { ...requestBody, content };
@@ -64,13 +103,19 @@ function withoutTokenOperation(operation: unknown): unknown {
 }
 
 /**
+ * Slack message timestamps are decimal strings such as `1793135656.414489`,
+ * and a JSON number would lose the trailing digits. The published specs type
+ * the `ts`, `thread_ts`, `latest` and `oldest` inputs (and any other `*_ts`
+ * input) as `number`, so the invoke validator rejects the real values. Only
+ * request inputs are rewritten, never responses.
+ *
  * The published Slack specs predate header auth and declare the credential as
  * an ordinary `token` input on every operation. Left in, each tool asks the
  * caller for the token and sends it in the query or body, where Slack rejects
  * it for current apps. Dropping it leaves the connection's credential, sent as
  * an `Authorization` header, as the only one.
  */
-export function stripSlackTokenInputs(document: unknown): unknown {
+export function normalizeSlackSpec(document: unknown): unknown {
   if (!isRecord(document) || !isRecord(document.paths)) return document;
   const paths = Object.fromEntries(
     Object.entries(document.paths).map(([path, pathItem]) => {
@@ -101,6 +146,6 @@ export const slackWebApiAdapter: SpecFormatAdapter = {
         Effect.provide(input.httpClientLayer),
       );
       const document = yield* parseSpecObject(specText);
-      return { specText: encodeJsonText(stripSlackTokenInputs(document)), specUrl: url };
+      return { specText: encodeJsonText(normalizeSlackSpec(document)), specUrl: url };
     }),
 };

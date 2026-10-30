@@ -1,1 +1,1 @@
-export { slackWebApiAdapter, stripSlackTokenInputs } from "./spec-format-adapter";
+export { normalizeSlackSpec, slackWebApiAdapter } from "./spec-format-adapter";
