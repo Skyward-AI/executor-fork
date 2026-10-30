@@ -33,7 +33,26 @@ const slackFixture = {
         parameters: [
           { name: "token", in: "query", schema: { type: "string" } },
           { name: "channel", in: "query", schema: { type: "string" } },
+          { name: "latest", in: "query", schema: { type: "number", default: 0 } },
+          { name: "oldest", in: "query", schema: { type: "number", default: 0 } },
+          { name: "limit", in: "query", schema: { type: "integer" } },
         ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: {
+              "application/json": {
+                schema: { type: "object", properties: { cache_ts: { type: "number" } } },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/conversations.replies": {
+      get: {
+        operationId: "conversations_replies",
+        parameters: [{ name: "ts", in: "query", required: true, schema: { type: "number" } }],
         responses: { "200": { description: "OK" } },
       },
     },
@@ -47,7 +66,11 @@ const slackFixture = {
               schema: {
                 type: "object",
                 required: ["channel", "token"],
-                properties: { channel: { type: "string" }, token: { type: "string" } },
+                properties: {
+                  channel: { type: "string" },
+                  token: { type: "string" },
+                  thread_ts: { type: "number" },
+                },
               },
             },
           },
@@ -113,6 +136,9 @@ it.effect("removes the token input so the connection's credential is the only on
     expect(spec.paths["/auth.test"].get.parameters).toEqual([]);
     expect(spec.paths["/conversations.history"].get.parameters).toEqual([
       { name: "channel", in: "query", schema: { type: "string" } },
+      { name: "latest", in: "query", schema: { type: "string" } },
+      { name: "oldest", in: "query", schema: { type: "string" } },
+      { name: "limit", in: "query", schema: { type: "integer" } },
     ]);
     expect(spec.paths["/chat.postMessage"].post.parameters).toEqual([]);
     expect(
@@ -121,7 +147,7 @@ it.effect("removes the token input so the connection's credential is the only on
     ).toEqual({
       type: "object",
       required: ["channel"],
-      properties: { channel: { type: "string" } },
+      properties: { channel: { type: "string" }, thread_ts: { type: "string" } },
     });
     expect(
       spec.paths["/files.upload"].post.requestBody.content["multipart/form-data"].schema,
@@ -129,6 +155,12 @@ it.effect("removes the token input so the connection's credential is the only on
       type: "object",
       properties: { content: { type: "string" } },
     });
+    expect(spec.paths["/conversations.replies"].get.parameters).toEqual([
+      { name: "ts", in: "query", required: true, schema: { type: "string" } },
+    ]);
+    expect(
+      spec.paths["/conversations.history"].get.responses["200"].content["application/json"].schema,
+    ).toEqual({ type: "object", properties: { cache_ts: { type: "number" } } });
     expect(converted.specUrl).toBe(SLACK_SPEC_URL);
   }),
 );
