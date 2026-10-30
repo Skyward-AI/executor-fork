@@ -80,16 +80,18 @@ export const isRetryableD1Failure = (failure: unknown, readOnly: boolean): boole
   return failureClass === "maybe-executed" && readOnly;
 };
 
-export const D1_RETRY_MAX_ATTEMPTS = 5;
+export const D1_RETRY_BUDGET = Duration.seconds(20);
 const D1_RETRY_BASE_DELAY = Duration.millis(200);
 const D1_RETRY_MAX_DELAY = Duration.seconds(2);
 
-/** 200ms, 400ms, 800ms, 1600ms (each jittered to 80-120%, capped at 2s):
- *  five attempts within about 3.6 seconds, so an MCP call still answers. */
+/** 200ms, 400ms, 800ms, 1600ms, then 2s (each jittered to 80-120%), for as
+ *  long as the 20 second budget lasts. D1 outages seen in production last
+ *  about 15 seconds, and most failed attempts return in milliseconds, so a
+ *  count-based limit gave up after under 4 seconds, long before D1 recovered. */
 export const d1RetrySchedule = Schedule.exponential(D1_RETRY_BASE_DELAY).pipe(
   Schedule.modifyDelay((_, delay) => Effect.succeed(Duration.min(delay, D1_RETRY_MAX_DELAY))),
   Schedule.jittered,
-  Schedule.both(Schedule.recurs(D1_RETRY_MAX_ATTEMPTS - 1)),
+  Schedule.both(Schedule.during(D1_RETRY_BUDGET)),
 );
 
 /** A rejection from the D1 binding, kept as-is in `cause`. */
@@ -108,13 +110,12 @@ export const retryTransientD1Call = <A>(
     const current = attempt;
     return Effect.tryPromise({ try: call, catch: (cause) => new D1CallError({ cause }) }).pipe(
       Effect.tapError(({ cause: failure }) =>
-        current < D1_RETRY_MAX_ATTEMPTS && isRetryableD1Failure(failure, readOnly)
+        isRetryableD1Failure(failure, readOnly)
           ? Effect.logWarning("D1 transient failure, retrying").pipe(
               Effect.annotateLogs({
                 "d1.operation": operation,
                 "d1.read_only": readOnly,
                 "d1.attempt": current,
-                "d1.max_attempts": D1_RETRY_MAX_ATTEMPTS,
                 "d1.failure_class": classifyD1Failure(failure),
                 "d1.failure": failureMessages(failure)[0] ?? "unknown",
               }),
