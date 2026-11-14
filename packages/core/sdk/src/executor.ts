@@ -238,6 +238,7 @@ import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } fr
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
+const CATALOG_PRUNE_NAME_BATCH_SIZE = 90;
 const MAX_APPROVAL_ARGUMENT_PREVIEW_CHARS = 4_000;
 
 // ---------------------------------------------------------------------------
@@ -4211,12 +4212,45 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           ),
           largestDefinitionChars: largestJsonChars(definitionRows.map((row) => row.schema)),
         });
+        const pruneStale = (table: "tool" | "definition", keptNames: readonly string[]) =>
+          Effect.gen(function* () {
+            const kept = new Set(keptNames);
+            const existing = yield* core.findMany(table, { where, select: ["name"] });
+            const stale = existing.map((row) => String(row.name)).filter((name) => !kept.has(name));
+            for (let offset = 0; offset < stale.length; offset += CATALOG_PRUNE_NAME_BATCH_SIZE) {
+              const batch = stale.slice(offset, offset + CATALOG_PRUNE_NAME_BATCH_SIZE);
+              yield* core.deleteMany(table, {
+                where: (b: AnyCb) => b.and(where(b), b("name", "in", batch)),
+              });
+            }
+          });
         yield* persistCatalog(
           Effect.gen(function* () {
-            yield* core.deleteMany("tool", { where });
-            yield* core.deleteMany("definition", { where });
-            yield* core.createMany("tool", toolRows);
-            yield* core.createMany("definition", definitionRows);
+            yield* core.upsertMany("tool", {
+              target: ["tenant", "owner", "subject", "integration", "connection", "name"],
+              update: [
+                "plugin_id",
+                "description",
+                "input_schema",
+                "output_schema",
+                "annotations",
+                "updated_at",
+              ],
+              values: toolRows,
+            });
+            yield* core.upsertMany("definition", {
+              target: ["tenant", "owner", "subject", "integration", "connection", "name"],
+              update: ["plugin_id", "schema"],
+              values: definitionRows,
+            });
+            yield* pruneStale(
+              "tool",
+              toolRows.map((row) => row.name),
+            );
+            yield* pruneStale(
+              "definition",
+              definitionRows.map((row) => row.name),
+            );
             yield* stampSynced(existingRow);
           }),
         );
