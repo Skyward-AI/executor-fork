@@ -29,6 +29,11 @@ export interface CreateSqliteTestFumaDbOptions<TTables extends FumaTables = Fuma
   readonly namespace?: string;
   readonly version?: string;
   readonly path?: string;
+  /** `false` models Cloudflare D1: no interactive transactions, each statement auto-commits. */
+  readonly interactiveTransactions?: boolean;
+  /** Awaited before every statement reaches the engine, so a test can hold
+   *  statements back and force a chosen interleaving between callers. */
+  readonly statementGate?: (sql: string) => Promise<void>;
 }
 
 export const createSqliteTestFumaDb = async <const TTables extends FumaTables>(
@@ -46,6 +51,22 @@ export const createSqliteTestFumaDb = async <const TTables extends FumaTables>(
     !options.path || options.path === ":memory:" ? ":memory:" : `file:${resolve(options.path)}`;
   const client = createClient({ url });
   await client.execute("PRAGMA foreign_keys = ON");
+  const gate = options.statementGate;
+  if (gate) {
+    const execute = client.execute.bind(client);
+    const batch = client.batch.bind(client);
+    const sqlOf = (statement: unknown) =>
+      typeof statement === "string" ? statement : String((statement as { sql?: unknown }).sql);
+    client.execute = (async (statement: Parameters<Client["execute"]>[0]) => {
+      await gate(sqlOf(statement));
+      return execute(statement);
+    }) as Client["execute"];
+    client.batch = (async (...args: Parameters<Client["batch"]>) => {
+      const first = args[0][0];
+      if (first !== undefined) await gate(sqlOf(first));
+      return batch(...args);
+    }) as Client["batch"];
+  }
 
   const schema = createDrizzleRuntimeSchemaFromTables({
     tables: options.tables,
@@ -69,6 +90,7 @@ export const createSqliteTestFumaDb = async <const TTables extends FumaTables>(
     namespace,
     version,
     provider: "sqlite",
+    interactiveTransactions: options.interactiveTransactions,
   });
 
   return {

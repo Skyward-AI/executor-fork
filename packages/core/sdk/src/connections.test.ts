@@ -3918,3 +3918,184 @@ describe("connections.checkHealth flip telemetry", () => {
     }),
   );
 });
+
+describe("tool catalog rebuild on an engine without interactive transactions", () => {
+  const catalogPlugin = (
+    catalog: { current: readonly { readonly name: string; readonly description: string }[] },
+    release?: Deferred.Deferred<void>,
+  ) =>
+    definePlugin(() => ({
+      id: "catalog" as const,
+      credentialProviders: [memoryProvider()],
+      storage: () => ({}),
+      resolveTools: () =>
+        Effect.gen(function* () {
+          const tools = catalog.current.map((tool) => ({
+            name: ToolName.make(tool.name),
+            description: tool.description,
+          }));
+          if (release) yield* Deferred.await(release);
+          return { tools };
+        }),
+      invokeTool: ({ toolRow }) => Effect.succeed({ ran: toolRow.name }),
+      extension: (ctx) => ({
+        seed: () =>
+          ctx.core.integrations.register({ slug: INTEG, description: "Vercel", config: {} }),
+      }),
+    }))();
+
+  const MAIN = {
+    owner: "org",
+    integration: INTEG,
+    name: ConnectionName.make("main"),
+  } as const;
+
+  const toolRows = (config: ReturnType<typeof makeTestConfig>) =>
+    Effect.promise(() => config.db.findMany("tool", {}));
+
+  /** Holds each catalog write until `width` writes are waiting (or a short
+   *  timeout passes), so concurrent executors run their statements in lockstep
+   *  the way separate isolates sharing one D1 database can. */
+  const lockstepCatalogWrites = (width: number) => {
+    let waiting: (() => void)[] = [];
+    const releaseAll = () => {
+      const batch = waiting;
+      waiting = [];
+      for (const resolve of batch) resolve();
+    };
+    return (sql: string) =>
+      /^\s*(delete|insert)/i.test(sql) && /tool|definition/.test(sql)
+        ? new Promise<void>((resolve) => {
+            waiting.push(resolve);
+            if (waiting.length >= width) releaseAll();
+            else setTimeout(releaseAll, 50);
+          })
+        : Promise.resolve();
+  };
+
+  it.effect("rebuilds that overlap across executors both succeed and keep each tool once", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const catalog = {
+          current: [
+            { name: "deploy", description: "deploy" },
+            { name: "list", description: "list" },
+          ],
+        };
+        const release = yield* Deferred.make<void>();
+        const config = makeTestConfig({
+          plugins: [catalogPlugin(catalog, release)] as const,
+          interactiveTransactions: false,
+          statementGate: lockstepCatalogWrites(5),
+        });
+        yield* Deferred.succeed(release, undefined);
+        const first = yield* createExecutor(config);
+        const others = yield* Effect.all([1, 2, 3, 4].map(() => createExecutor(config)));
+        yield* first.catalog.seed();
+        yield* first.connections.create({
+          ...MAIN,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        const results = yield* Effect.all(
+          [first, ...others].map((executor) => Effect.result(executor.connections.refresh(MAIN))),
+          { concurrency: "unbounded" },
+        );
+        expect(results.map((result) => Result.isSuccess(result))).toEqual([
+          true,
+          true,
+          true,
+          true,
+          true,
+        ]);
+
+        const rows = yield* toolRows(config);
+        expect(rows.map((row) => String(row.name)).sort()).toEqual(["deploy", "list"]);
+      }),
+    ),
+  );
+
+  it.effect("a rebuild never exposes an empty catalog to concurrent readers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const catalog = {
+          current: [
+            { name: "deploy", description: "deploy" },
+            { name: "list", description: "list" },
+          ],
+        };
+        const config = makeTestConfig({
+          plugins: [catalogPlugin(catalog)] as const,
+          interactiveTransactions: false,
+          statementGate: lockstepCatalogWrites(2),
+        });
+        const executor = yield* createExecutor(config);
+        yield* executor.catalog.seed();
+        yield* executor.connections.create({
+          ...MAIN,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        let polling = true;
+        const counts: number[] = [];
+        const poller = Effect.promise(async () => {
+          while (polling) {
+            const rows = await config.db.findMany("tool", {});
+            counts.push(rows.length);
+            await new Promise((resolve) => setTimeout(resolve, 2));
+          }
+        });
+        const pollerFiber = yield* Effect.forkChild(poller);
+        yield* executor.connections.refresh(MAIN);
+        polling = false;
+        yield* Fiber.join(pollerFiber);
+
+        expect(counts.length).toBeGreaterThan(0);
+        expect(Math.min(...counts)).toBe(2);
+      }),
+    ),
+  );
+
+  it.effect("a rebuild removes dropped tools and updates changed descriptions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const catalog = {
+          current: [
+            { name: "deploy", description: "deploy v1" },
+            { name: "list", description: "list v1" },
+          ],
+        };
+        const config = makeTestConfig({
+          plugins: [catalogPlugin(catalog)] as const,
+          interactiveTransactions: false,
+        });
+        const executor = yield* createExecutor(config);
+        yield* executor.catalog.seed();
+        yield* executor.connections.create({
+          ...MAIN,
+          template: TEMPLATE,
+          value: "secret-token",
+        });
+
+        catalog.current = [
+          { name: "deploy", description: "deploy v2" },
+          { name: "status", description: "status v1" },
+        ];
+        const refreshed = yield* executor.connections.refresh(MAIN);
+        expect(refreshed.map((tool) => String(tool.name)).sort()).toEqual(["deploy", "status"]);
+
+        const rows = yield* toolRows(config);
+        const byName = Object.fromEntries(
+          rows.map((row) => [String(row.name), String(row.description)]),
+        );
+        expect(byName).toEqual({ deploy: "deploy v2", status: "status v1" });
+
+        catalog.current = [];
+        yield* executor.connections.refresh(MAIN);
+        expect(yield* toolRows(config)).toEqual([]);
+      }),
+    ),
+  );
+});

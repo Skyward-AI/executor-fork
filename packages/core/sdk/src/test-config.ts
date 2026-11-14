@@ -27,6 +27,8 @@ const makeLazyTestFumaDb = (options: {
   readonly tables: ReturnType<typeof collectTables>;
   readonly backend: TestDatabaseBackend;
   readonly dataDir?: string;
+  readonly interactiveTransactions?: boolean;
+  readonly statementGate?: (sql: string) => Promise<void>;
 }): TestFumaDb => {
   let started: Promise<SqliteTestFumaDb> | undefined;
   const start = () => {
@@ -36,6 +38,8 @@ const makeLazyTestFumaDb = (options: {
           tables: options.tables,
           namespace: "executor_test",
           path: options.dataDir ? `${options.dataDir}/test.db` : undefined,
+          interactiveTransactions: options.interactiveTransactions,
+          statementGate: options.statementGate,
         }),
       );
     }
@@ -126,6 +130,10 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly plugins?: TPlugins;
   readonly backend?: TestDatabaseBackend;
   readonly dataDir?: string;
+  /** `false` models Cloudflare D1: transactions are not atomic. */
+  readonly interactiveTransactions?: boolean;
+  /** Awaited before every SQL statement; lets a test force an interleaving. */
+  readonly statementGate?: (sql: string) => Promise<void>;
   readonly coreTools?: ExecutorConfig<TPlugins>["coreTools"];
   /** Override the OAuth callback URL. Pass `null` to construct an executor with
    *  no OAuth callback (exercises the fail-loud redirect path). */
@@ -157,6 +165,8 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     tables,
     backend: options?.backend ?? "sqlite",
     dataDir: options?.dataDir,
+    interactiveTransactions: options?.interactiveTransactions,
+    statementGate: options?.statementGate,
   });
   const db = withQueryContext(testDb.db, {
     tenant,
