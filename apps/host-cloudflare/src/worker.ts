@@ -3,7 +3,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { setQuickJSModuleLoader } from "@executor-js/runtime-quickjs";
 import type { AdminArtifactSummary } from "@executor-js/sdk";
 
-import { makeCloudflareApp, reconcileInternalIntegrationsOnce } from "./app";
+import { makeCloudflareApp } from "./app";
 import {
   cloudflareAccessConfigErrorMessage,
   loadConfig,
@@ -11,6 +11,7 @@ import {
   type CloudflareEnv,
 } from "./config";
 import { mcpResourceFromPath } from "./mcp/resource";
+import { runScheduled } from "./scheduled";
 import { artifactSummaryFor } from "./unfurl";
 
 // Workers cannot fetch the default QuickJS .wasm, so every QuickJS user in this
@@ -119,11 +120,7 @@ export class ExecutorUnfurl extends WorkerEntrypoint<CloudflareEnv> {
 export default {
   fetch: (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> =>
     serveRequest(request, env, ctx, resolvePublic),
-  scheduled: (
-    _controller: ScheduledController,
-    env: CloudflareEnv,
-    ctx: ExecutionContext,
-  ): void => {
-    ctx.waitUntil(reconcileInternalIntegrationsOnce(env));
+  scheduled: (controller: ScheduledController, env: CloudflareEnv, ctx: ExecutionContext): void => {
+    ctx.waitUntil(runScheduled(env, controller.cron));
   },
 };

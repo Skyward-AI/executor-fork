@@ -50,7 +50,7 @@ import {
   isToolSyncHealth,
   toolSyncHealthDetailPrefix,
 } from "./health-check";
-import type { HealthCheckCandidate } from "./health-check";
+import type { HealthCheckCandidate, HealthCheckOptions } from "./health-check";
 import {
   ARTIFACT_FULL_COLUMNS,
   ARTIFACT_SUMMARY_COLUMNS,
@@ -217,6 +217,7 @@ import {
   exchangeClientCredentials,
   isPermanentTokenRejection,
   OAUTH2_DEFAULT_TIMEOUT_MS,
+  OAUTH2_REFRESH_SKEW_MS,
   isUnusableSuccessTokenResponse,
   optionalScopesFromAuthorizationUrl,
   shouldRefreshToken,
@@ -458,11 +459,7 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
      *  error: those come back as a `HealthCheckResult` with the matching status. */
     readonly checkHealth: (
       ref: ConnectionRef,
-      options?: {
-        /** Return the persisted verdict when younger than this; probe
-         *  otherwise. Omit to always probe. */
-        readonly ifStaleMs?: number;
-      },
+      options?: HealthCheckOptions,
     ) => Effect.Effect<
       HealthCheckResult,
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
@@ -3423,6 +3420,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // first (always single-input → `{ token: <access> }`).
     const resolveConnectionValues = (
       row: ConnectionRow,
+      refreshSkewMs: number = OAUTH2_REFRESH_SKEW_MS,
     ): Effect.Effect<Record<string, string | null>, StorageFailure | CredentialResolutionError> =>
       Effect.gen(function* () {
         const provider = credentialProviders.get(row.provider);
@@ -3434,7 +3432,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // OAuth connections refresh their access token before resolving when
         // it has expired (or is within the skew window).
         const expiresAt = row.expires_at == null ? null : Number(row.expires_at);
-        if (row.oauth_client != null && shouldRefreshToken({ expiresAt })) {
+        if (row.oauth_client != null && shouldRefreshToken({ expiresAt, skewMs: refreshSkewMs })) {
           const access = yield* refreshConnectionToken(row, provider);
           return { [PRIMARY_INPUT_VARIABLE]: access };
         }
@@ -5593,9 +5591,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const oauthCredentialHealthWithoutProbe = (
       row: ConnectionRow,
+      refreshSkewMs: number,
     ): Effect.Effect<HealthCheckResult, StorageFailure> =>
       foldCredentialResolutionIntoVerdict(
-        resolveConnectionValues(row).pipe(
+        resolveConnectionValues(row, refreshSkewMs).pipe(
           Effect.as({
             status: "healthy" as const,
             checkedAt: Date.now(),
@@ -5700,13 +5699,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const connectionCheckHealth = (
       ref: ConnectionRef,
-      options?: {
-        /** Skip the probe and return the persisted verdict when it is younger
-         *  than this. The server owns the freshness decision so N open tabs
-         *  revalidating on load cannot stampede an upstream. Omit = always
-         *  probe (the manual "Check now"). */
-        readonly ifStaleMs?: number;
-      },
+      // `ifStaleMs`: the server owns the freshness decision so N open tabs
+      // revalidating on load cannot stampede an upstream. Omit = always probe
+      // (the manual "Check now").
+      options?: HealthCheckOptions,
     ): Effect.Effect<
       HealthCheckResult,
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
@@ -5768,6 +5764,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           return result;
         }
         const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
+        const refreshSkewMs = Math.max(OAUTH2_REFRESH_SKEW_MS, options?.refreshWithinMs ?? 0);
 
         // Everything upstream-touching below runs behind the in-flight gate:
         // concurrent readers past the freshness check collapse to ONE probe
@@ -5793,7 +5790,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 // "the credential resolved (refreshing if due)" — a refresh
                 // failure is the one real signal this path can produce, and it
                 // must not hide inside a green span.
-                oauthCredentialHealthWithoutProbe(connectionRow).pipe(
+                oauthCredentialHealthWithoutProbe(connectionRow, refreshSkewMs).pipe(
                   // A resolvable token says nothing about whether the
                   // upstream accepts it. When tool sync has already recorded
                   // that it does not (a rejected discovery handshake, an
@@ -5813,7 +5810,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 )
               : foldCredentialResolutionIntoVerdict(
                   Effect.gen(function* () {
-                    const values = yield* resolveConnectionValues(connectionRow);
+                    const values = yield* resolveConnectionValues(connectionRow, refreshSkewMs);
                     const record = rowToIntegrationRecord(
                       integrationRow,
                       yield* describeAuthMethodsForRow(integrationRow),

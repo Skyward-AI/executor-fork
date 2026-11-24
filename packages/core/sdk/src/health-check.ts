@@ -138,6 +138,18 @@ export const HealthCheckResult = Schema.Struct({
 });
 export type HealthCheckResult = typeof HealthCheckResult.Type;
 
+/** Options for `connections.checkHealth`. */
+export interface HealthCheckOptions {
+  /** Serve the persisted verdict when it is younger than this; probe
+   *  otherwise. Omit to always probe. */
+  readonly ifStaleMs?: number;
+  /** Refresh an OAuth access token that expires within this window before
+   *  probing, instead of only once it is about to lapse. A scheduled checker
+   *  passes its own interval so a refresh grant the provider has revoked is
+   *  found by the check, not by the next real call. */
+  readonly refreshWithinMs?: number;
+}
+
 /** Detail prefix that marks a verdict as produced by tool-catalog sync, not a
  *  credential probe. Shared vocabulary: sync stamps it, and the surfaces that
  *  auto-revalidate verdicts skip these — a credential probe cannot refute a
@@ -147,6 +159,18 @@ export const toolSyncHealthDetailPrefix = "Tool sync failing";
 export const isToolSyncHealth = (result: HealthCheckResult | null | undefined): boolean =>
   result?.reason === "tool_sync_failed" ||
   result?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
+
+const FAILING_STATUSES: ReadonlySet<HealthStatus> = new Set([
+  "expired",
+  "misconfigured",
+  "degraded",
+]);
+
+/** A verdict that says the connection's credential is not working. `unknown`
+ *  (nothing could be probed) says nothing either way, and a failed tool sync is
+ *  the sync's verdict, not one a credential check can stand behind. */
+export const isFailingHealth = (result: HealthCheckResult | null | undefined): boolean =>
+  result != null && FAILING_STATUSES.has(result.status) && !isToolSyncHealth(result);
 
 // ---------------------------------------------------------------------------
 // HealthCheckCandidate: one operation the user can pick as the health check,

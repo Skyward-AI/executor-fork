@@ -98,6 +98,16 @@ export interface CloudflareEnv {
    * that binds it.
    */
   readonly AI_GATEWAY_TOKEN?: SecretsStoreBinding;
+  /**
+   * Where the hourly connection health sweep reports failing and recovered
+   * connections, as signed Standard Webhooks. Set both or neither: the URL is
+   * a var, the `whsec_` signing secret a `wrangler secret`. Unset, the sweep
+   * still refreshes and re-checks connections but reports nothing. Read only
+   * by the sweep (`connection-health/webhook-config.ts`), so a bad value
+   * cannot affect requests.
+   */
+  readonly CONNECTION_HEALTH_WEBHOOK_URL?: string;
+  readonly CONNECTION_HEALTH_WEBHOOK_SECRET?: string;
   readonly VITE_PUBLIC_SITE_URL?: string;
   /**
    * Dev/single-user escape hatch: when "true", skip Cloudflare Access entirely

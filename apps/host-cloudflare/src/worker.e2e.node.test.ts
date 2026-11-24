@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
+// oxlint-disable-next-line executor/no-vitest-import -- vi.waitFor polls work the Worker finishes after answering
+import { vi } from "vitest";
 import { Schema } from "effect";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -104,7 +106,7 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       local: true,
       persist: false,
       envFiles: HERMETIC_ENV_FILES,
-      experimental: { disableExperimentalWarning: true },
+      experimental: { disableExperimentalWarning: true, testScheduled: true },
       vars: {
         EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
         ENABLE_DEV_AUTH: "true",
@@ -198,6 +200,50 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(got.status).toBe(200);
     const integration = (await got.json()) as { slug: string } | null;
     expect(integration?.slug).toBe(slug);
+  }, 60_000);
+
+  it("the hourly trigger checks workspace and personal connections (D1 + platform view on workerd)", async () => {
+    const slug = `healthapi-${runId}`;
+    const add = await worker.fetch("/api/openapi/specs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spec: { kind: "blob", value: SPEC },
+        slug,
+        description: "Health API",
+        baseUrl: "https://example.com",
+      }),
+    });
+    expect(add.status).toBe(200);
+    const names = { org: "sweepOrg", user: "sweepPersonal" } as const;
+    for (const [owner, name] of Object.entries(names)) {
+      const created = await worker.fetch("/api/connections", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner, name, integration: slug, template: "none", values: {} }),
+      });
+      expect(created.status, await created.clone().text()).toBe(200);
+    }
+
+    const swept = await worker.fetch(
+      `/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("7 * * * *")}`,
+    );
+    expect(swept.status).toBe(200);
+
+    // The sweep runs inside `waitUntil`, after the trigger has answered.
+    for (const [owner, name] of Object.entries(names)) {
+      await vi.waitFor(
+        async () => {
+          const got = await worker.fetch(`/api/connections/${owner}/${slug}/${name}`);
+          const connection = (await got.json()) as { lastHealth: { checkedAt: number } | null };
+          expect(
+            connection.lastHealth?.checkedAt,
+            `${owner} connection was not checked`,
+          ).toBeTypeOf("number");
+        },
+        { timeout: 10_000, interval: 200 },
+      );
+    }
   }, 60_000);
 
   it("exposes Microsoft catalog presets through the OpenAPI integration catalog", async () => {
