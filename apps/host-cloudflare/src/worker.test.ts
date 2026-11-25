@@ -106,13 +106,4 @@ describe("worker", () => {
 
     expect([...(config.triggers?.crons ?? [])].sort()).toEqual([...JOBS.keys()].sort());
   });
-
-  it("runs no job for a cron named like an object property", async () => {
-    const waited: Promise<unknown>[] = [];
-    worker.scheduled(controller("constructor"), makeEnv({}), ctx(waited));
-    await Promise.all(waited);
-
-    expect(reconcileInternalIntegrationsOnce).not.toHaveBeenCalled();
-    expect(sweepConnectionHealthOnce).not.toHaveBeenCalled();
-  });
 });

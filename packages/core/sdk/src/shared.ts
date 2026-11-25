@@ -133,7 +133,6 @@ export {
 export type { HealthCheckOptions, HealthEvidence } from "./health-check";
 export {
   HealthStatus,
-  isFailingHealth,
   healthEvidence,
   HealthCheckReason,
   HealthCheckSpec,

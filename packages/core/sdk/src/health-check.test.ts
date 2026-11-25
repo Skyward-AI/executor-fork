@@ -8,11 +8,9 @@ import {
   classifyHttpStatus,
   classifyProbeResponse,
   healthEvidence,
-  isFailingHealth,
   rankResponseSample,
   sortHealthCheckCandidatesByIdentity,
   toolSyncHealthDetailPrefix,
-  type HealthStatus,
 } from "./health-check";
 
 const row = (path: string, value: string) => ({ path, value });
@@ -140,32 +138,6 @@ describe("classifyProbeResponse", () => {
         classifyHttpStatus(status),
       );
     }
-  });
-});
-
-describe("isFailingHealth", () => {
-  const verdict = (status: HealthStatus, detail?: string) => ({
-    status,
-    checkedAt: 0,
-    ...(detail === undefined ? {} : { detail }),
-  });
-
-  it("is true for a credential the check found not working", () => {
-    expect(isFailingHealth(verdict("expired"))).toBe(true);
-    expect(isFailingHealth(verdict("misconfigured"))).toBe(true);
-    expect(isFailingHealth(verdict("degraded"))).toBe(true);
-  });
-
-  it("is false for healthy, unprobed, absent, and tool-sync verdicts", () => {
-    expect(isFailingHealth(verdict("healthy"))).toBe(false);
-    expect(isFailingHealth(verdict("unknown"))).toBe(false);
-    expect(isFailingHealth(null)).toBe(false);
-    expect(isFailingHealth(verdict("expired", `${toolSyncHealthDetailPrefix}: rejected`))).toBe(
-      false,
-    );
-    expect(isFailingHealth({ status: "degraded", checkedAt: 0, reason: "tool_sync_failed" })).toBe(
-      false,
-    );
   });
 });
 

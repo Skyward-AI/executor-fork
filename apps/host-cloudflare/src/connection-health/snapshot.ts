@@ -32,6 +32,7 @@ export type ConnectionHealthVerdict = typeof ConnectionHealthVerdict.Type;
 
 export const ConnectionHealthSnapshot = Schema.Struct({
   tenant: Schema.String,
+  /** When the pass started; each verdict's `checkedAt` says when it was produced. */
   observedAt: Schema.Number,
   verdicts: Schema.Array(ConnectionHealthVerdict),
 });

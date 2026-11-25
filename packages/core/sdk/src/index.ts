@@ -118,7 +118,6 @@ export { ToolSchemaView, ToolAnnotationsView, IntegrationDetectionResult } from 
 export type { HealthCheckOptions, HealthEvidence } from "./health-check";
 export {
   HealthStatus,
-  isFailingHealth,
   healthEvidence,
   HealthCheckReason,
   HealthCheckSpec,

@@ -160,18 +160,6 @@ export const isToolSyncHealth = (result: HealthCheckResult | null | undefined): 
   result?.reason === "tool_sync_failed" ||
   result?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
 
-const FAILING_STATUSES: ReadonlySet<HealthStatus> = new Set([
-  "expired",
-  "misconfigured",
-  "degraded",
-]);
-
-/** A verdict that says the connection's credential is not working. `unknown`
- *  (nothing could be probed) says nothing either way, and a failed tool sync is
- *  the sync's verdict, not one a credential check can stand behind. */
-export const isFailingHealth = (result: HealthCheckResult | null | undefined): boolean =>
-  result != null && FAILING_STATUSES.has(result.status) && !isToolSyncHealth(result);
-
 /** What an alerting reporter may act on. Only a credential the check found
  *  dead is `failing`: a degraded upstream says nothing about the credential,
  *  `unknown` was not probed, and a tool-sync verdict is the sync's own. */

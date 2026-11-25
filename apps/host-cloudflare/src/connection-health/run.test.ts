@@ -2,7 +2,11 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 
-import { consoleUrlFor, reportTo } from "./run";
+import type { Executor, ExecutorAdmin } from "@executor-js/sdk";
+
+import type { BackgroundJob } from "../background";
+import type { CloudflareConfig, CloudflareEnv } from "../config";
+import { connectionHealthSweepFor, consoleUrlFor, reportTo } from "./run";
 import type { ConnectionHealthSnapshot } from "./snapshot";
 
 const SNAPSHOT: ConnectionHealthSnapshot = {
@@ -82,4 +86,46 @@ describe("consoleUrlFor", () => {
   it("is null when the deployment does not pin its origin", () => {
     expect(consoleUrlFor({ webBaseUrl: undefined, organizationSlug: "acme" })("x")).toBeNull();
   });
+});
+
+describe("connectionHealthSweepFor", () => {
+  it.effect("checks as the system principal and as each member, never recording a sighting", () =>
+    Effect.gen(function* () {
+      const calls: { subject: string; options: unknown }[] = [];
+      const received: unknown[] = [];
+      const executor = {} as Executor;
+      const frame: Pick<BackgroundJob, "env" | "config" | "accountId" | "actingAs"> = {
+        env: {
+          CONNECTION_HEALTH_REPORTS: {
+            report: (snapshot) => {
+              received.push(snapshot);
+              return Promise.resolve(null);
+            },
+          },
+        } as CloudflareEnv,
+        config: {
+          organizationId: "acme",
+          organizationSlug: "acme",
+          webBaseUrl: "https://console.test",
+        } as CloudflareConfig,
+        accountId: "svc",
+        actingAs: (subject, options) => {
+          calls.push({ subject, options });
+          return Effect.succeed(executor as never);
+        },
+      };
+
+      const sweep = yield* Effect.scoped(connectionHealthSweepFor(frame, {} as ExecutorAdmin));
+      yield* Effect.scoped(sweep.asMember("alice"));
+      yield* sweep.report(SNAPSHOT);
+
+      expect(calls).toEqual([
+        { subject: "svc", options: { orgWrites: "allowed", recordSighting: false } },
+        { subject: "alice", options: { orgWrites: "denied", recordSighting: false } },
+      ]);
+      expect(sweep.tenant).toBe("acme");
+      expect(sweep.consoleUrl("x")).toBe("https://console.test/acme/integrations/x");
+      expect(received).toEqual([SNAPSHOT]);
+    }),
+  );
 });
