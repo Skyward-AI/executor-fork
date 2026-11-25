@@ -11,6 +11,7 @@ import { unstable_dev, type Unstable_DevWorker } from "wrangler";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ConnectionHealthSnapshot } from "./connection-health/snapshot";
 import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsoft";
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,7 @@ const SPEC = JSON.stringify({
   },
 });
 
+const decodeSnapshot = Schema.decodeUnknownSync(ConnectionHealthSnapshot);
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 interface JsonReadableResponse {
@@ -96,6 +98,8 @@ const readMcpJson = async <A>(response: JsonReadableResponse): Promise<A> => {
 
 describe("cloudflare host e2e (workerd/miniflare)", () => {
   let worker: Unstable_DevWorker;
+  // Calls `ExecutorInternal.connectionHealth()` over a service binding.
+  let caller: Unstable_DevWorker;
 
   beforeAll(async () => {
     ensureStaticAssets();
@@ -112,9 +116,20 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
         ENABLE_DEV_AUTH: "true",
       },
     });
+
+    // Started after the Worker, so the dev registry can resolve its binding.
+    caller = await unstable_dev(resolve(dir, "../test-stubs/health-caller.ts"), {
+      config: resolve(dir, "../test-stubs/health-caller.wrangler.jsonc"),
+      ip: "127.0.0.1",
+      local: true,
+      persist: false,
+      envFiles: HERMETIC_ENV_FILES,
+      experimental: { disableExperimentalWarning: true },
+    });
   }, 120_000);
 
   afterAll(async () => {
+    await caller?.stop();
     await worker?.stop();
   });
 
@@ -244,6 +259,16 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
         { timeout: 10_000, interval: 200 },
       );
     }
+
+    // The pull: the stored verdicts, read through the internal door.
+    const pulled = await caller.fetch("/");
+    expect(pulled.status, await pulled.clone().text()).toBe(200);
+    const snapshot = decodeSnapshot(await pulled.json());
+    expect(snapshot.verdicts.map((v) => [v.owner, v.name, v.integration]).sort()).toEqual([
+      ["org", names.org, slug],
+      ["user", names.user, slug],
+    ]);
+    expect(snapshot.verdicts.every((v) => typeof v.checkedAt === "number")).toBe(true);
   }, 60_000);
 
   it("exposes Microsoft catalog presets through the OpenAPI integration catalog", async () => {

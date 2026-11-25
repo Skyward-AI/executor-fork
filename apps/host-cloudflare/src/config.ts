@@ -11,8 +11,6 @@ import {
 } from "@executor-js/sdk/host-internal";
 import { missingPublicOriginWarning, resolvePublicOrigin } from "@executor-js/sdk/public-origin";
 
-import type { ConnectionHealthSnapshot } from "./connection-health/snapshot";
-
 let warnedNoCloudflareOrigin = false;
 
 // ---------------------------------------------------------------------------
@@ -26,12 +24,6 @@ let warnedNoCloudflareOrigin = false;
 /** A Secrets Store binding: the value is resolved per call, never held as a var. */
 export interface SecretsStoreBinding {
   readonly get: () => Promise<string>;
-}
-
-/** The RPC surface of a connection health report receiver. What it answers
- *  is its own business: the sweep only needs to know the call settled. */
-export interface ConnectionHealthReports {
-  readonly report: (snapshot: ConnectionHealthSnapshot) => Promise<unknown>;
 }
 
 export const CLOUDFLARE_NAMESPACE = "executor_cloudflare";
@@ -106,12 +98,6 @@ export interface CloudflareEnv {
    * that binds it.
    */
   readonly AI_GATEWAY_TOKEN?: SecretsStoreBinding;
-  /**
-   * Service binding to the worker that receives the hourly connection health
-   * snapshot through an RPC `report(snapshot)` method. Optional: without it
-   * the sweep still refreshes and re-checks connections but reports nothing.
-   */
-  readonly CONNECTION_HEALTH_REPORTS?: ConnectionHealthReports;
   readonly VITE_PUBLIC_SITE_URL?: string;
   /**
    * Dev/single-user escape hatch: when "true", skip Cloudflare Access entirely
@@ -159,7 +145,7 @@ export interface CloudflareConfig {
 
 type CloudflareConfigEnv = Omit<
   CloudflareEnv,
-  "DB" | "BLOBS" | "ASSETS" | "MCP_SESSION" | "MCP_EXECUTION_OWNER" | "CONNECTION_HEALTH_REPORTS"
+  "DB" | "BLOBS" | "ASSETS" | "MCP_SESSION" | "MCP_EXECUTION_OWNER"
 >;
 
 type CloudflareAccessEnv = Pick<

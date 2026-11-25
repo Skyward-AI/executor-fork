@@ -1,6 +1,5 @@
 {
   "tenant": "default",
-  "observedAt": 1795600020000,
   "verdicts": [
     {
       "owner": "org",
@@ -12,7 +11,6 @@
       "evidence": "failing",
       "status": "expired",
       "reason": "credential_refresh_rejected",
-      "httpStatus": 400,
       "checkedAt": 1795599990000
     },
     {
@@ -25,7 +23,6 @@
       "evidence": "healthy",
       "status": "healthy",
       "reason": null,
-      "httpStatus": null,
       "checkedAt": 1795600000000
     },
     {
@@ -38,7 +35,6 @@
       "evidence": "inconclusive",
       "status": "unknown",
       "reason": null,
-      "httpStatus": null,
       "checkedAt": 1795600010000
     }
   ]

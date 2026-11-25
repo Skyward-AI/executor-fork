@@ -3,11 +3,10 @@ import { Schema } from "effect";
 import { HealthCheckReason, HealthStatus } from "@executor-js/sdk";
 
 // ---------------------------------------------------------------------------
-// The contract between the connection health sweep and the receiver bound as
-// `CONNECTION_HEALTH_REPORTS`. A snapshot carries a verdict for each connection
-// the pass checked; a connection left out was not checked this pass (not yet
-// due, its owner inactive, or its check failed) and says nothing about it.
-// Upstream error text never crosses: only the classified status and reason.
+// The contract of `ExecutorInternal.connectionHealth()`. A snapshot is the
+// latest stored verdict for each workspace connection and each active member's
+// personal connection; a connection never checked is omitted. Upstream error
+// text never crosses: only the classified status and reason.
 // ---------------------------------------------------------------------------
 
 export const ConnectionHealthVerdict = Schema.Struct({
@@ -24,7 +23,6 @@ export const ConnectionHealthVerdict = Schema.Struct({
   evidence: Schema.Literals(["failing", "healthy", "inconclusive"]),
   status: HealthStatus,
   reason: Schema.NullOr(HealthCheckReason),
-  httpStatus: Schema.NullOr(Schema.Number),
   /** When the evidence was produced; a recorded dead grant keeps its time. */
   checkedAt: Schema.Number,
 });
@@ -32,8 +30,6 @@ export type ConnectionHealthVerdict = typeof ConnectionHealthVerdict.Type;
 
 export const ConnectionHealthSnapshot = Schema.Struct({
   tenant: Schema.String,
-  /** When the pass started; each verdict's `checkedAt` says when it was produced. */
-  observedAt: Schema.Number,
   verdicts: Schema.Array(ConnectionHealthVerdict),
 });
 export type ConnectionHealthSnapshot = typeof ConnectionHealthSnapshot.Type;

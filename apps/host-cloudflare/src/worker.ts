@@ -10,6 +10,8 @@ import {
   missingCloudflareAccessVars,
   type CloudflareEnv,
 } from "./config";
+import { connectionHealthFor } from "./connection-health/read";
+import type { ConnectionHealthSnapshot } from "./connection-health/snapshot";
 import { mcpResourceFromPath } from "./mcp/resource";
 import { runScheduled } from "./scheduled";
 import { artifactSummaryFor } from "./unfurl";
@@ -36,7 +38,8 @@ export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
 //   - `ExecutorInternal` is the service-binding door: a worker in the same account
 //     reaches it through a `services` binding with `entrypoint: "ExecutorInternal"`.
 //     It builds its OWN app from a config marked `trustedInternal`; nothing in
-//     `env` or in a request can switch the public door into that mode.
+//     `env` or in a request can switch the public door into that mode. It also
+//     answers the RPC `connectionHealth()`, below.
 //   - `ExecutorUnfurl` is a narrow read-only RPC door, reached the same way with
 //     `entrypoint: "ExecutorUnfurl"`: link previews for internal services.
 // ---------------------------------------------------------------------------
@@ -101,6 +104,17 @@ const serveRequest = async (
 export class ExecutorInternal extends WorkerEntrypoint<CloudflareEnv> {
   override fetch(request: Request): Promise<Response> {
     return serveRequest(request, this.env, this.ctx, resolveInternal);
+  }
+
+  /**
+   * The latest stored connection health verdicts of the whole tenant: every
+   * workspace connection and every active member's personal connection, as the
+   * hourly sweep recorded them. Tenant-wide and read-only; the service binding
+   * is the trust boundary, and a holder of this door can already act as any
+   * member. Rejects if storage cannot be read, never answering partially.
+   */
+  connectionHealth(): Promise<ConnectionHealthSnapshot> {
+    return connectionHealthFor(this.env);
   }
 }
 
