@@ -1,0 +1,45 @@
+{
+  "tenant": "default",
+  "observedAt": 1795600020000,
+  "verdicts": [
+    {
+      "owner": "org",
+      "subject": null,
+      "integration": "cloudflare_mcp",
+      "integrationName": "Cloudflare AI Gateway MCP",
+      "name": "workspaceCloudflareAiGatewayMcp",
+      "url": "https://executor.example.com/default/integrations/cloudflare_mcp",
+      "evidence": "failing",
+      "status": "expired",
+      "reason": "credential_refresh_rejected",
+      "httpStatus": 400,
+      "checkedAt": 1795599990000
+    },
+    {
+      "owner": "user",
+      "subject": "member@example.com",
+      "integration": "github",
+      "integrationName": "GitHub",
+      "name": "personal",
+      "url": null,
+      "evidence": "healthy",
+      "status": "healthy",
+      "reason": null,
+      "httpStatus": null,
+      "checkedAt": 1795600000000
+    },
+    {
+      "owner": "org",
+      "subject": null,
+      "integration": "docs",
+      "integrationName": "Docs",
+      "name": "main",
+      "url": null,
+      "evidence": "inconclusive",
+      "status": "unknown",
+      "reason": null,
+      "httpStatus": null,
+      "checkedAt": 1795600010000
+    }
+  ]
+}

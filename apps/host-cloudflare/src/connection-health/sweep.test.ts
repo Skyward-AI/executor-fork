@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
+  ADMIN_MAX_PAGE_SIZE,
   AuthTemplateSlug,
   collectTables,
   ConnectionName,
@@ -23,13 +26,10 @@ import {
   type SqliteTestFumaDb,
 } from "@executor-js/sdk/testing";
 
-import {
-  CHECK_INTERVAL_MS,
-  shouldReport,
-  sweepConnectionHealth,
-  type ConnectionHealthEvent,
-} from "./sweep";
+import { ConnectionHealthSnapshot, type ConnectionHealthVerdict } from "./snapshot";
+import { CHECK_INTERVAL_MS, INACTIVE_MEMBER_MS, sweepConnectionHealth } from "./sweep";
 
+const decodeSnapshot = Schema.decodeUnknownSync(Schema.fromJsonString(ConnectionHealthSnapshot));
 const ORG_CHECK_INTERVAL_MS = CHECK_INTERVAL_MS.org;
 const USER_CHECK_INTERVAL_MS = CHECK_INTERVAL_MS.user;
 
@@ -37,11 +37,12 @@ const TENANT = "acme";
 const INTEG = IntegrationSlug.make("probe");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
 
 // The probe answers whatever the test set for the connection's name, so each
 // case controls a connection's verdict without an upstream.
 const makeWorld = () => {
-  const verdicts = new Map<string, HealthStatus>();
+  const verdicts = new Map<string, Omit<HealthCheckResult, "checkedAt">>();
   const plugin = definePlugin(() => ({
     id: "probe" as const,
     storage: () => ({}),
@@ -51,9 +52,10 @@ const makeWorld = () => {
     checkHealth: ({ credential }) =>
       Effect.sync(
         (): HealthCheckResult => ({
-          status: verdicts.get(String(credential.connection)) ?? "healthy",
-          checkedAt: Date.now(),
+          status: "healthy",
           detail: "probe",
+          ...verdicts.get(String(credential.connection)),
+          checkedAt: Date.now(),
         }),
       ),
     extension: (ctx) => ({
@@ -117,17 +119,19 @@ const withCheckHealth = (
 ): Executor => ({ ...executor, connections: { ...executor.connections, checkHealth } });
 
 /** A member as the platform view lists them: a `subject` row, which a host
- *  records the first time the member reaches the executor. */
+ *  records when the member reaches the executor. */
 const member = (db: SqliteTestFumaDb, externalId: string) =>
   Effect.promise(() =>
     db.client.execute({
       sql: "INSERT INTO subject (row_id, tenant, external_id, created_at) VALUES (?, ?, ?, ?)",
-      args: [`s-${externalId}`, TENANT, externalId, Date.now()],
+      // `created_at` is a timestamp column, stored in seconds.
+      args: [`s-${externalId}`, TENANT, externalId, Math.floor(Date.now() / 1000)],
     }),
   );
 
-/** The workspace, two members, and the checks each executor received. */
-const setup = (db: SqliteTestFumaDb) =>
+/** The workspace, its members, the checks each executor received, and the
+ *  snapshots the sweep reported. */
+const setup = (db: SqliteTestFumaDb, options?: { readonly failingMember?: string }) =>
   Effect.gen(function* () {
     const world = makeWorld();
     const org = yield* executorAs(world, db, "svc");
@@ -143,27 +147,26 @@ const setup = (db: SqliteTestFumaDb) =>
         checks.push({ as, name: String(ref.name), within: options?.refreshWithinMs });
         return executor.connections.checkHealth(ref, options);
       });
-    const members = new Map<string, Executor>([
-      ["alice", alice],
-      ["bob", bob],
-    ]);
-    const asMember = (subject: string) => {
-      const member = members.get(subject);
-      return member === undefined
-        ? Effect.die(`no member ${subject}`)
-        : Effect.succeed(recording(subject, member));
-    };
-    const events: ConnectionHealthEvent[] = [];
+    const asMember = (subject: string) =>
+      subject === options?.failingMember
+        ? Effect.fail(new StorageError({ message: "D1 down", cause: undefined }))
+        : executorAs(world, db, subject).pipe(
+            Effect.map((executor) => recording(subject, executor)),
+          );
+    const snapshots: ConnectionHealthSnapshot[] = [];
     const run = (overrides?: { readonly org?: Executor }) =>
       sweepConnectionHealth({
         tenant: TENANT,
         org: overrides?.org ?? recording("svc", org),
         admin: platform.admin!,
         asMember,
-        notify: (event) => Effect.sync(() => void events.push(event)),
+        consoleUrl: (integration) => `https://console.test/default/integrations/${integration}`,
+        report: (snapshot) => Effect.sync(() => void snapshots.push(snapshot)),
         now: Date.now,
       });
-    return { world, org, alice, bob, checks, events, run };
+    const verdictOf = (name: string): ConnectionHealthVerdict | undefined =>
+      snapshots.at(-1)?.verdicts.find((v) => v.name === name);
+    return { world, org, alice, bob, checks, snapshots, verdictOf, run };
   });
 
 describe("sweepConnectionHealth", () => {
@@ -189,7 +192,7 @@ describe("sweepConnectionHealth", () => {
           "svc:neverChecked",
           "svc:staleOrg",
         ]);
-        expect(summary).toEqual({ checked: 3, reported: 0 });
+        expect(summary).toEqual({ due: 3, checked: 3, inactiveMembers: 0, failedOwners: 0 });
       }),
     ),
   );
@@ -200,7 +203,6 @@ describe("sweepConnectionHealth", () => {
         const { org, alice, checks, run } = yield* setup(db);
         yield* connect(org, "org", "almostAnHour");
         yield* connect(alice, "user", "almostSixHours");
-        // The hourly pass found these a few minutes after the last one wrote them.
         yield* lastChecked(db, "almostAnHour", "healthy", ORG_CHECK_INTERVAL_MS - 3 * MINUTE);
         yield* lastChecked(db, "almostSixHours", "healthy", USER_CHECK_INTERVAL_MS - 3 * MINUTE);
 
@@ -226,36 +228,61 @@ describe("sweepConnectionHealth", () => {
     ),
   );
 
-  it.effect("reports a failing workspace connection and a member's recovered one", () =>
+  it.effect("reports one snapshot of every checked connection, healthy ones included", () =>
     withDb((db) =>
       Effect.gen(function* () {
-        const { world, org, alice, events, run } = yield* setup(db);
+        const { world, org, alice, snapshots, verdictOf, run } = yield* setup(db);
         yield* connect(org, "org", "shared");
         yield* connect(alice, "user", "mine");
-        yield* lastChecked(db, "mine", "expired", USER_CHECK_INTERVAL_MS);
-        world.verdicts.set("shared", "expired");
-
-        const summary = yield* run();
-
-        expect(summary).toEqual({ checked: 2, reported: 2 });
-        const byName = new Map(events.map((e) => [e.connection.name, e]));
-        expect(byName.get("shared")).toMatchObject({
-          tenant: TENANT,
-          connection: {
-            owner: "org",
-            subject: null,
-            integration: "probe",
-            integrationName: "Probe Service",
-            name: "shared",
-          },
-          previous: null,
-          current: { status: "expired", detail: "probe" },
+        world.verdicts.set("shared", {
+          status: "expired",
+          reason: "credential_refresh_rejected",
+          httpStatus: 400,
+          detail: "invalid_grant: Grant not found",
         });
-        expect(byName.get("mine")).toMatchObject({
-          connection: { owner: "user", subject: "alice", name: "mine" },
-          previous: "expired",
-          current: { status: "healthy" },
+
+        yield* run();
+
+        expect(snapshots).toHaveLength(1);
+        expect(snapshots[0]).toMatchObject({ tenant: TENANT, observedAt: expect.any(Number) });
+        expect(verdictOf("shared")).toEqual({
+          owner: "org",
+          subject: null,
+          integration: "probe",
+          integrationName: "Probe Service",
+          name: "shared",
+          url: "https://console.test/default/integrations/probe",
+          evidence: "failing",
+          status: "expired",
+          reason: "credential_refresh_rejected",
+          httpStatus: 400,
+          checkedAt: expect.any(Number),
         });
+        expect(verdictOf("mine")).toMatchObject({
+          owner: "user",
+          subject: "alice",
+          evidence: "healthy",
+          status: "healthy",
+          reason: null,
+          httpStatus: null,
+        });
+        expect(JSON.stringify(snapshots)).not.toContain("Grant not found");
+      }),
+    ),
+  );
+
+  it.effect("reports even when nothing was due, so a lost pass is repaired by the next", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const { org, snapshots, run } = yield* setup(db);
+        yield* connect(org, "org", "shared");
+        yield* lastChecked(db, "shared", "healthy", MINUTE);
+
+        yield* run();
+
+        expect(snapshots).toEqual([
+          { tenant: TENANT, observedAt: expect.any(Number), verdicts: [] },
+        ]);
       }),
     ),
   );
@@ -274,13 +301,13 @@ describe("sweepConnectionHealth", () => {
     ),
   );
 
-  it.effect("a check that fails is skipped without costing the others theirs", () =>
+  it.effect("a check that fails is left out without costing the others theirs", () =>
     withDb((db) =>
       Effect.gen(function* () {
-        const { org, world, events, run } = yield* setup(db);
+        const { org, world, verdictOf, run } = yield* setup(db);
         yield* connect(org, "org", "broken");
         yield* connect(org, "org", "shared");
-        world.verdicts.set("shared", "expired");
+        world.verdicts.set("shared", { status: "expired" });
         const failing = withCheckHealth(org, (ref: ConnectionRef, options) =>
           String(ref.name) === "broken"
             ? Effect.fail(new StorageError({ message: "D1 down", cause: undefined }))
@@ -289,38 +316,112 @@ describe("sweepConnectionHealth", () => {
 
         const summary = yield* run({ org: failing });
 
-        expect(summary).toEqual({ checked: 1, reported: 1 });
-        expect(events.map((e) => e.connection.name)).toEqual(["shared"]);
+        expect(summary).toEqual({ due: 2, checked: 1, inactiveMembers: 0, failedOwners: 0 });
+        expect(verdictOf("broken")).toBeUndefined();
+        expect(verdictOf("shared")?.evidence).toBe("failing");
       }),
     ),
   );
-});
 
-describe("shouldReport", () => {
-  const verdict = (status: HealthStatus, detail?: string): HealthCheckResult => ({
-    status,
-    checkedAt: 0,
-    ...(detail === undefined ? {} : { detail }),
-  });
-  const toolSync: HealthCheckResult = {
-    status: "expired",
-    checkedAt: 0,
-    reason: "tool_sync_failed",
-  };
+  it.effect("a member whose executor cannot be built is skipped, not the whole pass", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const { alice, bob, verdictOf, run } = yield* setup(db, { failingMember: "alice" });
+        yield* connect(alice, "user", "hers");
+        yield* connect(bob, "user", "his");
 
-  it.each([
-    ["never checked, now failing", null, verdict("expired"), true],
-    ["still failing", verdict("expired"), verdict("expired"), true],
-    ["newly misconfigured", verdict("healthy"), verdict("misconfigured"), true],
-    ["newly degraded", verdict("healthy"), verdict("degraded"), true],
-    ["recovered", verdict("expired"), verdict("healthy"), true],
-    ["still healthy", verdict("healthy"), verdict("healthy"), false],
-    ["first check healthy", null, verdict("healthy"), false],
-    ["cannot probe, then healthy", verdict("unknown"), verdict("healthy"), false],
-    ["healthy, then cannot probe", verdict("healthy"), verdict("unknown"), false],
-    ["a failed tool sync, not the credential", verdict("healthy"), toolSync, false],
-    ["recovered from a failed tool sync", toolSync, verdict("healthy"), false],
-  ] as const)("%s", (_, previous, current, expected) => {
-    expect(shouldReport(previous, current)).toBe(expected);
-  });
+        const summary = yield* run();
+
+        expect(summary).toEqual({ due: 2, checked: 1, inactiveMembers: 0, failedOwners: 1 });
+        expect(verdictOf("his")?.subject).toBe("bob");
+      }),
+    ),
+  );
+
+  it.effect("skips members not seen for a month, so their credentials are not kept alive", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const { verdictOf, run, world } = yield* setup(db);
+        yield* member(db, "carol");
+        yield* connect(yield* executorAs(world, db, "carol"), "user", "stale");
+        // Last seen a month and a day ago, after the connect that counted as a sighting.
+        yield* Effect.promise(() =>
+          db.client.execute({
+            sql: "UPDATE subject SET last_seen_at = ? WHERE external_id = ?",
+            args: [String(Date.now() - INACTIVE_MEMBER_MS - DAY), "carol"],
+          }),
+        );
+
+        const summary = yield* run();
+
+        expect(summary.inactiveMembers).toBe(1);
+        expect(verdictOf("stale")).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("ages out a member who was recorded a month ago and never seen", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const { verdictOf, run, world } = yield* setup(db);
+        yield* member(db, "dave");
+        yield* connect(yield* executorAs(world, db, "dave"), "user", "unseen");
+        yield* Effect.promise(() =>
+          db.client.execute({
+            sql: "UPDATE subject SET last_seen_at = NULL, created_at = ? WHERE external_id = ?",
+            args: [Math.floor((Date.now() - INACTIVE_MEMBER_MS - DAY) / 1000), "dave"],
+          }),
+        );
+
+        const summary = yield* run();
+
+        expect(summary.inactiveMembers).toBe(1);
+        expect(verdictOf("unseen")).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("pages through every member, past one full admin page", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const { verdictOf, run, world } = yield* setup(db);
+        const many = ADMIN_MAX_PAGE_SIZE + 10;
+        for (let i = 0; i < many; i++) yield* member(db, `m${String(i).padStart(3, "0")}`);
+        const last = `m${String(many - 1).padStart(3, "0")}`;
+        yield* connect(yield* executorAs(world, db, last), "user", "lastMembers");
+
+        yield* run();
+
+        expect(verdictOf("lastMembers")?.subject).toBe(last);
+      }),
+    ),
+  );
+
+  it.effect("speaks the contract the receiver's fixture pins", () =>
+    Effect.sync(() => {
+      const fixture = decodeSnapshot(
+        readFileSync(new URL("./snapshot.fixture.json", import.meta.url), "utf8"),
+      );
+      expect(fixture.verdicts.map((v) => [v.owner, v.evidence, v.status])).toEqual([
+        ["org", "failing", "expired"],
+        ["user", "healthy", "healthy"],
+        ["org", "inconclusive", "unknown"],
+      ]);
+    }),
+  );
+
+  it.effect("reports a snapshot the contract accepts", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const { world, org, alice, snapshots, run } = yield* setup(db);
+        yield* connect(org, "org", "shared");
+        yield* connect(alice, "user", "mine");
+        world.verdicts.set("shared", { status: "expired", reason: "credential_refresh_rejected" });
+
+        yield* run();
+
+        expect(decodeSnapshot(JSON.stringify(snapshots[0]))).toEqual(snapshots[0]);
+      }),
+    ),
+  );
 });

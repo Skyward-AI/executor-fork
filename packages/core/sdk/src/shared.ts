@@ -130,10 +130,11 @@ export {
 } from "./oauth";
 
 // Health-check vocabulary (pure Schema + helpers).
-export type { HealthCheckOptions } from "./health-check";
+export type { HealthCheckOptions, HealthEvidence } from "./health-check";
 export {
   HealthStatus,
   isFailingHealth,
+  healthEvidence,
   HealthCheckReason,
   HealthCheckSpec,
   HealthCheckResult,

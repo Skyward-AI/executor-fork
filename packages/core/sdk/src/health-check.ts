@@ -172,6 +172,22 @@ const FAILING_STATUSES: ReadonlySet<HealthStatus> = new Set([
 export const isFailingHealth = (result: HealthCheckResult | null | undefined): boolean =>
   result != null && FAILING_STATUSES.has(result.status) && !isToolSyncHealth(result);
 
+/** What an alerting reporter may act on. Only a credential the check found
+ *  dead is `failing`: a degraded upstream says nothing about the credential,
+ *  `unknown` was not probed, and a tool-sync verdict is the sync's own. */
+export type HealthEvidence = "failing" | "healthy" | "inconclusive";
+
+const EVIDENCE_OF_STATUS: Readonly<Record<HealthStatus, HealthEvidence>> = {
+  healthy: "healthy",
+  expired: "failing",
+  misconfigured: "failing",
+  degraded: "inconclusive",
+  unknown: "inconclusive",
+};
+
+export const healthEvidence = (result: HealthCheckResult): HealthEvidence =>
+  isToolSyncHealth(result) ? "inconclusive" : EVIDENCE_OF_STATUS[result.status];
+
 // ---------------------------------------------------------------------------
 // HealthCheckCandidate: one operation the user can pick as the health check,
 // projected from the plugin's stored operations. The editor lists these ranked

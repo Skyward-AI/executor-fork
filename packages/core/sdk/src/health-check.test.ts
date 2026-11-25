@@ -7,6 +7,7 @@ import {
   candidateIdentityTier,
   classifyHttpStatus,
   classifyProbeResponse,
+  healthEvidence,
   isFailingHealth,
   rankResponseSample,
   sortHealthCheckCandidatesByIdentity,
@@ -165,5 +166,28 @@ describe("isFailingHealth", () => {
     expect(isFailingHealth({ status: "degraded", checkedAt: 0, reason: "tool_sync_failed" })).toBe(
       false,
     );
+  });
+});
+
+describe("healthEvidence", () => {
+  it("calls only a dead credential failing", () => {
+    expect(
+      (["healthy", "expired", "misconfigured", "degraded", "unknown"] as const).map((status) =>
+        healthEvidence({ status, checkedAt: 0 }),
+      ),
+    ).toEqual(["healthy", "failing", "failing", "inconclusive", "inconclusive"]);
+  });
+
+  it("leaves a tool-sync verdict to the sync, whatever its status", () => {
+    expect(healthEvidence({ status: "expired", checkedAt: 0, reason: "tool_sync_failed" })).toBe(
+      "inconclusive",
+    );
+    expect(
+      healthEvidence({
+        status: "misconfigured",
+        checkedAt: 0,
+        detail: `${toolSyncHealthDetailPrefix}: rejected`,
+      }),
+    ).toBe("inconclusive");
   });
 });

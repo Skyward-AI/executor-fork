@@ -24,7 +24,7 @@ vi.mock("./app", () => ({ makeCloudflareApp, reconcileInternalIntegrationsOnce }
 vi.mock("./connection-health/run", () => ({ sweepConnectionHealthOnce }));
 
 const { default: worker } = await import("./worker");
-const { CONNECTION_HEALTH_CRON } = await import("./scheduled");
+const { CONNECTION_HEALTH_CRON, JOBS } = await import("./scheduled");
 
 const makeEnv = (vars: Partial<CloudflareEnv>): CloudflareEnv =>
   // oxlint-disable-next-line executor/no-double-cast -- test double: only the vars the code under test reads are set
@@ -87,11 +87,32 @@ describe("worker", () => {
     await Promise.all(waited);
   });
 
-  it("the hourly trigger is declared in wrangler.jsonc", () => {
+  it("an unknown trigger runs no job", async () => {
+    reconcileInternalIntegrationsOnce.mockClear();
+    sweepConnectionHealthOnce.mockClear();
+    const waited: Promise<unknown>[] = [];
+
+    worker.scheduled(controller("*/5 * * * *"), makeEnv({}), ctx(waited));
+    await Promise.all(waited);
+
+    expect(reconcileInternalIntegrationsOnce).not.toHaveBeenCalled();
+    expect(sweepConnectionHealthOnce).not.toHaveBeenCalled();
+  });
+
+  it("declares in wrangler.jsonc exactly the crons that have a job", () => {
     const config = parse(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8")) as {
       readonly triggers?: { readonly crons?: readonly string[] };
     };
 
-    expect(config.triggers?.crons).toContain(CONNECTION_HEALTH_CRON);
+    expect([...(config.triggers?.crons ?? [])].sort()).toEqual([...JOBS.keys()].sort());
+  });
+
+  it("runs no job for a cron named like an object property", async () => {
+    const waited: Promise<unknown>[] = [];
+    worker.scheduled(controller("constructor"), makeEnv({}), ctx(waited));
+    await Promise.all(waited);
+
+    expect(reconcileInternalIntegrationsOnce).not.toHaveBeenCalled();
+    expect(sweepConnectionHealthOnce).not.toHaveBeenCalled();
   });
 });

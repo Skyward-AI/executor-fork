@@ -653,6 +653,11 @@ export const ADMIN_DEFAULT_PAGE_SIZE = 100;
  *  A larger `limit` is clamped rather than honored. */
 export const ADMIN_MAX_PAGE_SIZE = 500;
 
+/** Subjects per connection read in `listSubjectsWithConnections`. Each one is a
+ *  bound parameter, D1 allows 100 per statement, and the owner and tenant
+ *  predicates take a few more. */
+const SUBJECTS_PER_CONNECTION_READ = 90;
+
 /**
  * Normalize paging for every admin list.
  *
@@ -7844,10 +7849,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           })
           .pipe(Effect.map((rows) => rows.map(rowToAdminConnection)));
 
-      // ONE connection query for the whole page, not one per subject. The
+      // One connection query per 90 subjects, not one per subject. The
       // per-subject form was an N+1: a default page issued 100 sequential
       // `findMany`s over a per-request socket, which on cloud cost ~1.4s of a
-      // ~2.4s response. Cost is now two queries regardless of page size.
+      // ~2.4s response. Cost is now one subject query plus one connection
+      // query per 90 subjects in the page.
       //
       // The `in` predicate carries the SAME `owner: "user"` clause the keyed
       // read does, so org rows (whose `subject` is the empty-string sentinel)
@@ -7867,21 +7873,28 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           // match, so issuing it would be pure latency.
           if (subjects.length === 0) return [];
 
-          const rows = yield* platformCore.findMany("connection", {
-            where: (b: AnyCb) =>
-              b.and(
-                b("owner", "=", "user"),
-                b(
-                  "subject",
-                  "in",
-                  subjects.map((entry) => entry.externalId),
-                ),
+          // The `in` list binds one parameter per subject, and D1 refuses a
+          // statement with more than 100, so a large page is read in chunks.
+          // A subject sits in exactly one chunk, so each bucket keeps the
+          // `(integration, name)` order of its own query.
+          const ids = subjects.map((entry) => entry.externalId);
+          const chunks = Array.from(
+            { length: Math.ceil(ids.length / SUBJECTS_PER_CONNECTION_READ) },
+            (_, index) =>
+              ids.slice(
+                index * SUBJECTS_PER_CONNECTION_READ,
+                (index + 1) * SUBJECTS_PER_CONNECTION_READ,
               ),
-            orderBy: [
-              ["integration", "asc"],
-              ["name", "asc"],
-            ],
-          });
+          );
+          const rows = (yield* Effect.forEach(chunks, (chunk) =>
+            platformCore.findMany("connection", {
+              where: (b: AnyCb) => b.and(b("owner", "=", "user"), b("subject", "in", chunk)),
+              orderBy: [
+                ["integration", "asc"],
+                ["name", "asc"],
+              ],
+            }),
+          )).flat();
 
           const bySubject = new Map<string, AdminConnection[]>();
           for (const row of rows) {

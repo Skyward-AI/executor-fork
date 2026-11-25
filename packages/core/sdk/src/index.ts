@@ -115,10 +115,11 @@ export type { CredentialProvider, ProviderEntry } from "./provider";
 export { ToolSchemaView, ToolAnnotationsView, IntegrationDetectionResult } from "./types";
 
 // Health-check vocabulary (pure Schema + helpers).
-export type { HealthCheckOptions } from "./health-check";
+export type { HealthCheckOptions, HealthEvidence } from "./health-check";
 export {
   HealthStatus,
   isFailingHealth,
+  healthEvidence,
   HealthCheckReason,
   HealthCheckSpec,
   HealthCheckResult,
