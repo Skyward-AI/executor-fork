@@ -138,6 +138,18 @@ export const HealthCheckResult = Schema.Struct({
 });
 export type HealthCheckResult = typeof HealthCheckResult.Type;
 
+/** Options for `connections.checkHealth`. */
+export interface HealthCheckOptions {
+  /** Serve the persisted verdict when it is younger than this; probe
+   *  otherwise. Omit to always probe. */
+  readonly ifStaleMs?: number;
+  /** Refresh an OAuth access token that expires within this window before
+   *  probing, instead of only once it is about to lapse. A scheduled checker
+   *  passes its own interval so a refresh grant the provider has revoked is
+   *  found by the check, not by the next real call. */
+  readonly refreshWithinMs?: number;
+}
+
 /** Detail prefix that marks a verdict as produced by tool-catalog sync, not a
  *  credential probe. Shared vocabulary: sync stamps it, and the surfaces that
  *  auto-revalidate verdicts skip these — a credential probe cannot refute a
@@ -147,6 +159,22 @@ export const toolSyncHealthDetailPrefix = "Tool sync failing";
 export const isToolSyncHealth = (result: HealthCheckResult | null | undefined): boolean =>
   result?.reason === "tool_sync_failed" ||
   result?.detail?.startsWith(toolSyncHealthDetailPrefix) === true;
+
+/** What an alerting reporter may act on. Only a credential the check found
+ *  dead is `failing`: a degraded upstream says nothing about the credential,
+ *  `unknown` was not probed, and a tool-sync verdict is the sync's own. */
+export type HealthEvidence = "failing" | "healthy" | "inconclusive";
+
+const EVIDENCE_OF_STATUS: Readonly<Record<HealthStatus, HealthEvidence>> = {
+  healthy: "healthy",
+  expired: "failing",
+  misconfigured: "failing",
+  degraded: "inconclusive",
+  unknown: "inconclusive",
+};
+
+export const healthEvidence = (result: HealthCheckResult): HealthEvidence =>
+  isToolSyncHealth(result) ? "inconclusive" : EVIDENCE_OF_STATUS[result.status];
 
 // ---------------------------------------------------------------------------
 // HealthCheckCandidate: one operation the user can pick as the health check,

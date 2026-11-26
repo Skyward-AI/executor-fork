@@ -7,7 +7,9 @@
   // Access configuration is set per installation after the first deploy.
   // Preserve those live bindings when this source config does not declare them.
   "keep_vars": true,
-  "triggers": { "crons": ["* * * * *"] },
+  // Every minute: reconcile internal integrations. Hourly at :07: the
+  // connection health sweep (`CONNECTION_HEALTH_CRON` in src/scheduled.ts).
+  "triggers": { "crons": ["* * * * *", "7 * * * *"] },
   "observability": {
     "enabled": true,
     "traces": { "enabled": true, "head_sampling_rate": 1 },

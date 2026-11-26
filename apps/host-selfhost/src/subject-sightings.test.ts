@@ -80,3 +80,16 @@ test("repeat requests from several members converge on one row each", async () =
   // the repeat sightings are absorbed by the throttle rather than duplicating.
   expect(await subjectsOf(org)).toEqual(["alice", "bob"]);
 });
+
+test("background work on a member's behalf can skip the sighting", async () => {
+  const org = "sightings-org-3";
+  await Effect.runPromise(
+    makeScopedExecutor<SelfHostPlugins>("alice", org, "Default", { recordSighting: false }).pipe(
+      Effect.provide(SelfHostScopedExecutorSeams),
+      Effect.provide(dbLayer),
+      Effect.asVoid,
+    ),
+  );
+
+  expect(await subjectsOf(org)).toEqual([]);
+});

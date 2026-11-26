@@ -1,0 +1,8 @@
+{
+  "name": "executor-health-caller",
+  "main": "./health-caller.ts",
+  "compatibility_date": "2025-04-01",
+  "services": [
+    { "binding": "EXECUTOR", "service": "executor-cloudflare", "entrypoint": "ExecutorInternal" },
+  ],
+}

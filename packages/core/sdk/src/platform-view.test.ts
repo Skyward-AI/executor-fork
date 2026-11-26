@@ -918,6 +918,52 @@ describe("platform view — the joined read does not fan out per subject", () =>
     ),
   );
 
+  // D1 refuses a statement with more than 100 bound parameters, and the read
+  // binds one per subject, so a maximum page is read in chunks.
+  it.effect("reads a maximum page in chunks D1 accepts, and keeps every subject's rows", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        resetSubjectTouchCache();
+        const count = 2 * 90 + 5;
+        for (let index = 0; index < count; index += 1) {
+          const subject = `user_${String(index).padStart(4, "0")}`;
+          yield* touchSubject(db.db, { tenant: TENANT, externalId: subject });
+          yield* insertConnection(db, {
+            rowId: `c-${subject}`,
+            tenant: TENANT,
+            owner: "user",
+            subject,
+            integration: "github",
+            name: `personal-${subject}`,
+          });
+        }
+        const admin = yield* requireAdmin(yield* makePlatformExecutor(db));
+
+        const client = db.client;
+        const execute = client.execute.bind(client);
+        let widest = 0;
+        client.execute = (statement: InStatement) => {
+          if (typeof statement !== "string" && Array.isArray(statement.args)) {
+            widest = Math.max(widest, statement.args.length);
+          }
+          return execute(statement);
+        };
+        const rows = yield* admin.listSubjectsWithConnections({ limit: ADMIN_MAX_PAGE_SIZE });
+
+        expect(rows).toHaveLength(count);
+        expect(
+          rows.every(
+            (row) =>
+              row.connections.length === 1 &&
+              row.connections[0]?.name === `personal-${row.externalId}`,
+          ),
+        ).toBe(true);
+        expect(widest).toBeGreaterThan(0);
+        expect(widest).toBeLessThanOrEqual(100);
+      }),
+    ),
+  );
+
   it.effect("keeps a subject with no connections in the page, with an empty array", () =>
     withDb((db) =>
       Effect.gen(function* () {

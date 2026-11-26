@@ -7,8 +7,10 @@ import {
   candidateIdentityTier,
   classifyHttpStatus,
   classifyProbeResponse,
+  healthEvidence,
   rankResponseSample,
   sortHealthCheckCandidatesByIdentity,
+  toolSyncHealthDetailPrefix,
 } from "./health-check";
 
 const row = (path: string, value: string) => ({ path, value });
@@ -136,5 +138,28 @@ describe("classifyProbeResponse", () => {
         classifyHttpStatus(status),
       );
     }
+  });
+});
+
+describe("healthEvidence", () => {
+  it("calls only a dead credential failing", () => {
+    expect(
+      (["healthy", "expired", "misconfigured", "degraded", "unknown"] as const).map((status) =>
+        healthEvidence({ status, checkedAt: 0 }),
+      ),
+    ).toEqual(["healthy", "failing", "failing", "inconclusive", "inconclusive"]);
+  });
+
+  it("leaves a tool-sync verdict to the sync, whatever its status", () => {
+    expect(healthEvidence({ status: "expired", checkedAt: 0, reason: "tool_sync_failed" })).toBe(
+      "inconclusive",
+    );
+    expect(
+      healthEvidence({
+        status: "misconfigured",
+        checkedAt: 0,
+        detail: `${toolSyncHealthDetailPrefix}: rejected`,
+      }),
+    ).toBe("inconclusive");
   });
 });

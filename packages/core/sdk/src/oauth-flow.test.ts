@@ -1862,6 +1862,108 @@ describe("oauth token refresh in resolveConnectionValue", () => {
     ),
   );
 
+  const connectOrgMain = (server: {
+    readonly authorizationEndpoint: string;
+    readonly tokenEndpoint: string;
+    readonly mcpResourceUrl: string;
+    readonly completeAuthorizationCodeFlow: (input: {
+      readonly authorizationUrl: string;
+    }) => Effect.Effect<{ readonly code: string }, unknown>;
+  }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeTestWorkspaceHarness({ plugins });
+      const { executor } = harness;
+      yield* executor.acme.seed();
+      yield* executor.oauth.createClient({
+        owner: "org",
+        slug: CLIENT,
+        authorizationUrl: server.authorizationEndpoint,
+        tokenUrl: server.tokenEndpoint,
+        grant: "authorization_code",
+        clientId: "test-client",
+        clientSecret: "test-secret",
+        resource: server.mcpResourceUrl,
+      });
+      const started = yield* executor.oauth.start({
+        owner: "org",
+        client: CLIENT,
+        clientOwner: "org",
+        name: ConnectionName.make("main"),
+        integration: INTEG,
+        template: TEMPLATE,
+      });
+      if (started.status !== "redirect") return yield* Effect.die("expected a redirect");
+      const callback = yield* server.completeAuthorizationCodeFlow({
+        authorizationUrl: started.authorizationUrl,
+      });
+      yield* executor.oauth.complete({ state: started.state, code: callback.code });
+      return harness;
+    });
+
+  const MAIN = { owner: "org", integration: INTEG, name: ConnectionName.make("main") } as const;
+  const isRefreshRequest = (r: {
+    readonly path: string;
+    readonly method: string;
+    readonly body: string;
+  }) => r.path === "/token" && r.method === "POST" && r.body.includes("refresh_token");
+
+  it.effect("checkHealth refreshes a token that expires within refreshWithinMs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor, config } = yield* connectOrgMain(server);
+        const tenMinutesOut = Date.now() + 10 * 60_000;
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "main"),
+            set: { expires_at: tenMinutesOut },
+          }),
+        );
+        yield* server.clearRequests;
+
+        // Still valid for ten minutes: the default 60s window leaves it alone.
+        const plain = yield* executor.connections.checkHealth(MAIN);
+        expect(plain.status).toBe("healthy");
+        expect((yield* server.requests).filter(isRefreshRequest)).toHaveLength(0);
+
+        // A checker that will not look again for an hour refreshes it now.
+        const ahead = yield* executor.connections.checkHealth(MAIN, {
+          refreshWithinMs: 60 * 60_000,
+        });
+        expect(ahead.status).toBe("healthy");
+        expect((yield* server.requests).filter(isRefreshRequest)).toHaveLength(1);
+        const after = yield* executor.connections.get(MAIN);
+        expect(after?.expiresAt).toBeGreaterThan(tenMinutesOut);
+      }),
+    ),
+  );
+
+  it.effect("checkHealth with refreshWithinMs finds a revoked grant before the token lapses", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          supportRefresh: false,
+          invalidRefreshTokenDescription: "Grant not found",
+        });
+        const { executor, config } = yield* connectOrgMain(server);
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "main"),
+            set: { expires_at: Date.now() + 10 * 60_000 },
+          }),
+        );
+
+        const result = yield* executor.connections.checkHealth(MAIN, {
+          refreshWithinMs: 60 * 60_000,
+        });
+        expect(result.status).toBe("expired");
+        expect(result.reason).toBe("credential_refresh_rejected");
+        expect(result.detail).toContain("Grant not found");
+      }),
+    ),
+  );
+
   it.effect("a definitively rejected grant is not re-sent to the AS on later refreshes", () =>
     Effect.scoped(
       Effect.gen(function* () {

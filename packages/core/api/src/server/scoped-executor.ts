@@ -296,6 +296,11 @@ export const makeScopedExecutor = <
     /** How the acting account reached the executor, stamped on internal-host
      *  calls. Omitted -> `service`. */
     readonly origin?: InternalOrigin;
+    /** Record the acting account's sighting (`subject.last_seen_at`).
+     *  Omitted -> recorded. Background work acting on a member's behalf
+     *  (a scheduled health check) passes `false` so it does not make an
+     *  absent member look active. */
+    readonly recordSighting?: boolean;
   },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
@@ -394,7 +399,9 @@ export const makeScopedExecutor = <
     // construction — it returns `Effect<void>`, so a lost sighting logs and the
     // request proceeds. `accountId` is passed verbatim, sentinels ("local")
     // included.
-    yield* touchSubject(db, { tenant: organizationId, externalId: accountId });
+    if (options?.recordSighting !== false) {
+      yield* touchSubject(db, { tenant: organizationId, externalId: accountId });
+    }
 
     // The seam erases the plugin tuple type; the caller re-narrows via the
     // `TPlugins` phantom. Runtime shape is identical to a typed

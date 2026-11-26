@@ -4,11 +4,14 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
+// oxlint-disable-next-line executor/no-vitest-import -- vi.waitFor polls work the Worker finishes after answering
+import { vi } from "vitest";
 import { Schema } from "effect";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ConnectionHealthSnapshot } from "./connection-health/snapshot";
 import { microsoftCatalog } from "@executor-js/plugin-openapi/providers/microsoft";
 
 // ---------------------------------------------------------------------------
@@ -50,6 +53,7 @@ const SPEC = JSON.stringify({
   },
 });
 
+const decodeSnapshot = Schema.decodeUnknownSync(ConnectionHealthSnapshot);
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 interface JsonReadableResponse {
@@ -94,6 +98,8 @@ const readMcpJson = async <A>(response: JsonReadableResponse): Promise<A> => {
 
 describe("cloudflare host e2e (workerd/miniflare)", () => {
   let worker: Unstable_DevWorker;
+  // Calls `ExecutorInternal.connectionHealth()` over a service binding.
+  let caller: Unstable_DevWorker;
 
   beforeAll(async () => {
     ensureStaticAssets();
@@ -104,15 +110,26 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
       local: true,
       persist: false,
       envFiles: HERMETIC_ENV_FILES,
-      experimental: { disableExperimentalWarning: true },
+      experimental: { disableExperimentalWarning: true, testScheduled: true },
       vars: {
         EXECUTOR_SECRET_KEY: "test-secret-key-0123456789abcdef",
         ENABLE_DEV_AUTH: "true",
       },
     });
+
+    // Started after the Worker, so the dev registry can resolve its binding.
+    caller = await unstable_dev(resolve(dir, "../test-stubs/health-caller.ts"), {
+      config: resolve(dir, "../test-stubs/health-caller.wrangler.jsonc"),
+      ip: "127.0.0.1",
+      local: true,
+      persist: false,
+      envFiles: HERMETIC_ENV_FILES,
+      experimental: { disableExperimentalWarning: true },
+    });
   }, 120_000);
 
   afterAll(async () => {
+    await caller?.stop();
     await worker?.stop();
   });
 
@@ -198,6 +215,60 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(got.status).toBe(200);
     const integration = (await got.json()) as { slug: string } | null;
     expect(integration?.slug).toBe(slug);
+  }, 60_000);
+
+  it("the hourly trigger checks workspace and personal connections (D1 + platform view on workerd)", async () => {
+    const slug = `healthapi-${runId}`;
+    const add = await worker.fetch("/api/openapi/specs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spec: { kind: "blob", value: SPEC },
+        slug,
+        description: "Health API",
+        baseUrl: "https://example.com",
+      }),
+    });
+    expect(add.status).toBe(200);
+    const names = { org: "sweepOrg", user: "sweepPersonal" } as const;
+    for (const [owner, name] of Object.entries(names)) {
+      const created = await worker.fetch("/api/connections", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ owner, name, integration: slug, template: "none", values: {} }),
+      });
+      expect(created.status, await created.clone().text()).toBe(200);
+    }
+
+    const swept = await worker.fetch(
+      `/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("7 * * * *")}`,
+    );
+    expect(swept.status).toBe(200);
+
+    // The sweep runs inside `waitUntil`, after the trigger has answered.
+    for (const [owner, name] of Object.entries(names)) {
+      await vi.waitFor(
+        async () => {
+          const got = await worker.fetch(`/api/connections/${owner}/${slug}/${name}`);
+          const connection = (await got.json()) as { lastHealth: { checkedAt: number } | null };
+          expect(
+            connection.lastHealth?.checkedAt,
+            `${owner} connection was not checked`,
+          ).toBeTypeOf("number");
+        },
+        { timeout: 10_000, interval: 200 },
+      );
+    }
+
+    // The pull: the stored verdicts, read through the internal door.
+    const pulled = await caller.fetch("/");
+    expect(pulled.status, await pulled.clone().text()).toBe(200);
+    const snapshot = decodeSnapshot(await pulled.json());
+    expect(snapshot.verdicts.map((v) => [v.owner, v.name, v.integration]).sort()).toEqual([
+      ["org", names.org, slug],
+      ["user", names.user, slug],
+    ]);
+    expect(snapshot.verdicts.every((v) => typeof v.checkedAt === "number")).toBe(true);
   }, 60_000);
 
   it("exposes Microsoft catalog presets through the OpenAPI integration catalog", async () => {
